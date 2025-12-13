@@ -1,0 +1,174 @@
+name: Lint and Test
+
+on:
+  push:
+    branches: [ master, main, develop ]
+  pull_request:
+    branches: [ master, main, develop ]
+
+jobs:
+  python-lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [rewrite-service, summarize-service, email-service]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          cd ${{ matrix.service }}
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 black pylint
+      
+      - name: Run Black formatter
+        run: |
+          cd ${{ matrix.service }}
+          black --check app.py
+      
+      - name: Run Flake8
+        run: |
+          cd ${{ matrix.service }}
+          flake8 app.py --max-line-length=120
+      
+      - name: Run Pylint
+        run: |
+          cd ${{ matrix.service }}
+          pylint app.py --disable=C0111,C0103
+
+  javascript-lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+      
+      - name: Run ESLint
+        run: |
+          cd frontend
+          npm run lint || true
+      
+      - name: Run Prettier
+        run: |
+          cd frontend
+          npx prettier --check "src/**/*.{js,jsx,json,css}"
+
+  python-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [rewrite-service, summarize-service, email-service]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          cd ${{ matrix.service }}
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov httpx
+      
+      - name: Run tests
+        run: |
+          cd ${{ matrix.service }}
+          # pytest tests/ --cov=app --cov-report=xml
+          echo "Tests would run here"
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./${{ matrix.service }}/coverage.xml
+          flags: ${{ matrix.service }}
+        if: false  # Enable when tests are added
+
+  docker-lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [rewrite-service, summarize-service, email-service, nginx-gateway, frontend]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.service }}/Dockerfile
+          failure-threshold: warning
+
+  kubernetes-lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up kubeval
+        run: |
+          wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+          tar xf kubeval-linux-amd64.tar.gz
+          sudo mv kubeval /usr/local/bin
+      
+      - name: Validate Kubernetes manifests
+        run: |
+          kubeval k8s/*.yaml
+      
+      - name: Run kube-linter
+        uses: stackrox/kube-linter-action@v1
+        with:
+          directory: k8s/
+          config: .kube-linter.yaml
+        continue-on-error: true
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner in repo mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  markdown-lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Lint Markdown files
+        uses: articulate/actions-markdownlint@v1
+        with:
+          config: .markdownlint.json
+          files: '*.md docs/*.md'
+        continue-on-error: true

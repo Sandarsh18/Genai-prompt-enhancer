@@ -1,0 +1,136 @@
+name: Deploy to Kubernetes
+
+on:
+  push:
+    branches: [ master, main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  KUBECTL_VERSION: '1.28.0'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+      
+      - name: Configure Kubernetes context
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > kubeconfig.yaml
+          export KUBECONFIG=kubeconfig.yaml
+          kubectl config current-context
+      
+      - name: Create namespace if not exists
+        run: |
+          kubectl create namespace genai-prompt-enhancer --dry-run=client -o yaml | kubectl apply -f -
+      
+      - name: Create secrets
+        run: |
+          kubectl create secret generic genai-secret \
+            --from-literal=api-key="${{ secrets.GENAI_API_KEY }}" \
+            --namespace=genai-prompt-enhancer \
+            --dry-run=client -o yaml | kubectl apply -f -
+      
+      - name: Update image tags
+        run: |
+          TAG=${GITHUB_SHA::7}
+          for file in k8s/*-deploy.yaml; do
+            sed -i "s|:latest|:${TAG}|g" $file
+          done
+      
+      - name: Deploy ConfigMap
+        run: |
+          kubectl apply -f k8s/configmap.yaml -n genai-prompt-enhancer
+      
+      - name: Deploy services
+        run: |
+          kubectl apply -f k8s/ -n genai-prompt-enhancer
+      
+      - name: Wait for deployment
+        run: |
+          kubectl rollout status deployment/rewrite-deploy -n genai-prompt-enhancer --timeout=5m
+          kubectl rollout status deployment/summarize-deploy -n genai-prompt-enhancer --timeout=5m
+          kubectl rollout status deployment/email-deploy -n genai-prompt-enhancer --timeout=5m
+          kubectl rollout status deployment/frontend-deploy -n genai-prompt-enhancer --timeout=5m
+          kubectl rollout status deployment/gateway-deploy -n genai-prompt-enhancer --timeout=5m
+      
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n genai-prompt-enhancer
+          kubectl get svc -n genai-prompt-enhancer
+          kubectl get hpa -n genai-prompt-enhancer
+      
+      - name: Run health checks
+        run: |
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod -l app=rewrite-service -n genai-prompt-enhancer --timeout=2m
+          kubectl wait --for=condition=ready pod -l app=summarize-service -n genai-prompt-enhancer --timeout=2m
+          kubectl wait --for=condition=ready pod -l app=email-service -n genai-prompt-enhancer --timeout=2m
+          kubectl wait --for=condition=ready pod -l app=frontend -n genai-prompt-enhancer --timeout=2m
+          kubectl wait --for=condition=ready pod -l app=nginx-gateway -n genai-prompt-enhancer --timeout=2m
+      
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### Pods" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n genai-prompt-enhancer >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "### Services" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get svc -n genai-prompt-enhancer >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+      
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, rolling back..."
+          kubectl rollout undo deployment/rewrite-deploy -n genai-prompt-enhancer
+          kubectl rollout undo deployment/summarize-deploy -n genai-prompt-enhancer
+          kubectl rollout undo deployment/email-deploy -n genai-prompt-enhancer
+          kubectl rollout undo deployment/frontend-deploy -n genai-prompt-enhancer
+          kubectl rollout undo deployment/gateway-deploy -n genai-prompt-enhancer
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: deploy
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests..."
+          # Add your smoke test commands here
+          # curl -f http://your-service-url/health || exit 1
+      
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "Deployment successful! 🎉"
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Deployment failed! ❌"

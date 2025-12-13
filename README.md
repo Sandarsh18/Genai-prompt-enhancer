@@ -32,8 +32,10 @@ Transform your text with AI-powered rewriting, summarization, and email drafting
   <a href="#-architecture">Architecture</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-kubernetes-deployment">Kubernetes</a> •
-  <a href="#-monitoring">Monitoring</a> •
-  <a href="#-demo">Demo</a>
+  <a href="#-monitoring--observability">Monitoring</a> •
+  <a href="#-auto-scaling-demo">Auto-Scaling</a> •
+  <a href="#-screenshots">Screenshots</a> •
+  <a href="#-contributing">Contributing</a>
 </p>
 
 ---
@@ -518,15 +520,49 @@ genai-prompt-enhancer/
 
 ---
 
+## 📸 Screenshots
+
+See [screenshots and demos](docs/SCREENSHOTS.md) for visual walkthrough of the application, Kubernetes deployment, monitoring dashboards, and auto-scaling in action.
+
+**Quick Preview:**
+
+- ✅ Modern React UI with three AI features
+- ✅ Kubernetes pods running and auto-scaling
+- ✅ Prometheus & Grafana monitoring dashboards
+- ✅ HPA scaling from 1 to 4 replicas under load
+- ✅ Real-time metrics and performance graphs
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 📚 Documentation
+
+Comprehensive documentation available:
+
+- **[Architecture Overview](docs/ARCHITECTURE.md)** - System design and component details
+- **[Deployment Guide](docs/DEPLOYMENT.md)** - Complete deployment instructions for all environments
+- **[Screenshots & Demos](docs/SCREENSHOTS.md)** - Visual walkthrough and performance metrics
+- **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to the project
+- **[Security Policy](SECURITY.md)** - Security best practices and reporting
+- **[Changelog](CHANGELOG.md)** - Version history and updates
+- **[Code of Conduct](CODE_OF_CONDUCT.md)** - Community guidelines
+
+---
+
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+We welcome contributions! Please read our [Contributing Guide](CONTRIBUTING.md) to get started.
+
+**Quick Start:**
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.
 
 ---
 
@@ -546,11 +582,17 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-## 📞 Support
+## 📞 Support & Community
 
-- 📧 Email: support@example.com
-- 🐛 Issues: [GitHub Issues](https://github.com/Sandarsh18/genai-prompt-enhancer/issues)
-- 💬 Discussions: [GitHub Discussions](https://github.com/Sandarsh18/genai-prompt-enhancer/discussions)
+- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/Sandarsh18/genai-prompt-enhancer/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/Sandarsh18/genai-prompt-enhancer/discussions)
+- 📖 **Documentation**: [docs/](docs/)
+- 🔒 **Security**: See [SECURITY.md](SECURITY.md)
+
+**Found this helpful?**
+- ⭐ Star this repository
+- 🍴 Fork and contribute
+- 📢 Share with others
 
 ---
 
