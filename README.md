@@ -5,8 +5,10 @@
 [![GitHub Stars](https://img.shields.io/github/stars/Sandarsh18/genai-prompt-enhancer?style=social)](https://github.com/Sandarsh18/genai-prompt-enhancer/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/Sandarsh18/genai-prompt-enhancer?style=social)](https://github.com/Sandarsh18/genai-prompt-enhancer/network/members)
 [![GitHub Issues](https://img.shields.io/github/issues/Sandarsh18/genai-prompt-enhancer)](https://github.com/Sandarsh18/genai-prompt-enhancer/issues)
+[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/Sandarsh18/genai-prompt-enhancer)](https://github.com/Sandarsh18/genai-prompt-enhancer/pulls)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Code of Conduct](https://img.shields.io/badge/code%20of-conduct-ff69b4.svg)](CODE_OF_CONDUCT.md)
 
 <p align="center">
   <img src="https://img.shields.io/badge/kubernetes-%23326ce5.svg?style=for-the-badge&logo=kubernetes&logoColor=white" alt="Kubernetes"/>
@@ -547,6 +549,7 @@ Comprehensive documentation available:
 - **[Security Policy](SECURITY.md)** - Security best practices and reporting
 - **[Changelog](CHANGELOG.md)** - Version history and updates
 - **[Code of Conduct](CODE_OF_CONDUCT.md)** - Community guidelines
+- **[Roadmap](ROADMAP.md)** - Future plans and feature requests
 
 ---
 
