@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: genai-shared-config
+  labels:
+    app: genai-prompt-enhancer
+    tier: platform
+  annotations:
+    description: "Shared environment configuration for all GenAI services"
+data:
+  GENAI_PROVIDER: "gemini"
+  GENAI_API_BASE_URL: "https://api.openai.com/v1/chat/completions"
+  GENAI_GEMINI_BASE_URL: "https://generativelanguage.googleapis.com/v1beta/models"
+  GENAI_MODEL: "gemini-1.5-flash"
+  GENAI_TIMEOUT: "8"
+  LOG_LEVEL: "info"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: genai-api-credentials
+  labels:
+    app: genai-prompt-enhancer
+stringData:
+  GENAI_API_KEY: "REPLACE_WITH_REAL_KEY"

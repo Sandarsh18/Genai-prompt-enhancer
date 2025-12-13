@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: summarize-service
+  labels:
+    app: summarize
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: summarize
+  template:
+    metadata:
+      labels:
+        app: summarize
+        tier: backend
+    spec:
+      containers:
+        - name: summarize
+          image: summarize-service:latest
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: genai-shared-config
+            - secretRef:
+                name: genai-api-credentials
+          ports:
+            - containerPort: 8001
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 20

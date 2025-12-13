@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rewrite-service
+  labels:
+    app: rewrite
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rewrite
+  template:
+    metadata:
+      labels:
+        app: rewrite
+        tier: backend
+    spec:
+      containers:
+        - name: rewrite
+          image: rewrite-service:latest
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef:
+                name: genai-shared-config
+            - secretRef:
+                name: genai-api-credentials
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
