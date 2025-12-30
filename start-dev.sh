@@ -107,6 +107,24 @@ for port in 8000 8001 8002; do
     fi
 done
 
+# --- Automatically show helpful logs if email service failed to start ---
+# (keeps start-dev.sh simple: only detects email service failure and prints recent log lines)
+EMAIL_PORT=8002
+EMAIL_LOG="logs/email.log"
+if ! curl -sS --max-time 2 "http://localhost:${EMAIL_PORT}/" >/dev/null 2>&1; then
+  echo "✗ Email service on port ${EMAIL_PORT} failed healthcheck — showing recent logs (${EMAIL_LOG}):"
+  if [ -f "${EMAIL_LOG}" ]; then
+    echo "---- Begin ${EMAIL_LOG} (last 200 lines) ----"
+    tail -n 200 "${EMAIL_LOG}" || true
+    echo "---- End ${EMAIL_LOG} ----"
+  else
+    echo "No ${EMAIL_LOG} found. Check logs/ directory."
+  fi
+  echo "Quick recommendations:"
+  echo " - If you see ModuleNotFoundError for prometheus_fastapi_instrumentator, run: ./scripts/bootstrap.sh"
+  echo " - To collect more details run: ./scripts/diagnose.sh"
+fi
+
 # Start NGINX Gateway
 echo ""
 echo -e "${BLUE}Starting NGINX Gateway...${NC}"

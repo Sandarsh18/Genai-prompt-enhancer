@@ -721,3 +721,11 @@ Prepare GitHub repository secrets:
 - Add ServiceMonitor CRDs for each backend (post Helm install).
 - Integrate API key rotation with external secret manager (Vault, SOPS).
 - Extend CI with automated load tests before deployment.
+
+
+
+Starting after Dec 30:
+source .env
+./start-dev.sh # to start all services
+./stop-dev.sh  # to stop all services
+./status.sh    # to check status of services
