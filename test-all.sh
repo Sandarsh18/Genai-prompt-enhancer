@@ -75,46 +75,58 @@ echo ""
 echo -e "${BLUE}Test 3: Functional Tests${NC}"
 functional_ok=true
 
-# Test Rewrite
+# DEVOPS: Test Rewrite (accept both mock and GenAI responses)
 result=$(curl -s -X POST http://localhost:8088/rewrite \
     -H "Content-Type: application/json" \
     -d '{"text":"test message"}' 2>&1)
 
-if echo "$result" | grep -q "result"; then
-    echo -e "  ${GREEN}✓${NC} Rewrite service functional"
-    echo "    Response: $(echo $result | jq -r '.result' 2>/dev/null || echo $result)"
+# Check if result field exists (service is working)
+if echo "$result" | grep -q '"result"'; then
+    mode=$(echo "$result" | jq -r '.mode' 2>/dev/null || echo "unknown")
+    echo -e "  ${GREEN}✓${NC} Rewrite service functional (mode: $mode)"
+    if [ "$mode" = "mock" ]; then
+        reason=$(echo "$result" | jq -r '.reason' 2>/dev/null || echo "unknown")
+        echo -e "    ${YELLOW}ℹ${NC} Using mock mode (reason: $reason)"
+    fi
 else
     echo -e "  ${RED}✗${NC} Rewrite service failed"
+    echo "    Response: $result"
     functional_ok=false
 fi
 
-# Test Summarize
+# DEVOPS: Test Summarize (accept both mock and GenAI responses)
 result=$(curl -s -X POST http://localhost:8088/summarize \
     -H "Content-Type: application/json" \
     -d '{"text":"First. Second. Third. Fourth. Fifth."}' 2>&1)
 
-if echo "$result" | grep -q "result"; then
-    echo -e "  ${GREEN}✓${NC} Summarize service functional"
-    echo "    Response: $(echo $result | jq -r '.result' 2>/dev/null || echo $result)"
+if echo "$result" | grep -q '"result"'; then
+    mode=$(echo "$result" | jq -r '.mode' 2>/dev/null || echo "unknown")
+    echo -e "  ${GREEN}✓${NC} Summarize service functional (mode: $mode)"
+    if [ "$mode" = "mock" ]; then
+        reason=$(echo "$result" | jq -r '.reason' 2>/dev/null || echo "unknown")
+        echo -e "    ${YELLOW}ℹ${NC} Using mock mode (reason: $reason)"
+    fi
 else
     echo -e "  ${RED}✗${NC} Summarize service failed"
+    echo "    Response: $result"
     functional_ok=false
 fi
 
-# Test Email
+# DEVOPS: Test Email (accept both mock and GenAI responses)
 result=$(curl -s -X POST http://localhost:8088/email \
     -H "Content-Type: application/json" \
     -d '{"text":"Meeting tomorrow"}' 2>&1)
 
-if echo "$result" | grep -q "result"; then
-    echo -e "  ${GREEN}✓${NC} Email service functional"
-    echo "    Response preview: $(echo $result | jq -r '.result' 2>/dev/null | head -c 50)..."
-elif echo "$result" | grep -q "GenAI service unavailable"; then
-    echo -e "  ${YELLOW}⚠${NC} Email service responding but GenAI API rate limited/unavailable"
-    echo "    (Service is healthy, API quota may be exceeded)"
+if echo "$result" | grep -q '"result"'; then
+    mode=$(echo "$result" | jq -r '.mode' 2>/dev/null || echo "unknown")
+    echo -e "  ${GREEN}✓${NC} Email service functional (mode: $mode)"
+    if [ "$mode" = "mock" ]; then
+        reason=$(echo "$result" | jq -r '.reason' 2>/dev/null || echo "unknown")
+        echo -e "    ${YELLOW}ℹ${NC} Using mock mode (reason: $reason)"
+    fi
 else
     echo -e "  ${RED}✗${NC} Email service failed"
-    echo "    Error: $result"
+    echo "    Response: $result"
     functional_ok=false
 fi
 

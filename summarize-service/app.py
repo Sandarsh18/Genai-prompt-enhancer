@@ -30,6 +30,19 @@ async def health_check():
   return {'status': 'healthy', 'service': 'summarize'}
 
 
+@app.get('/ready')
+async def readiness_check():
+  """Readiness check - service is ready even without GenAI API."""
+  genai_status = 'configured' if GENAI_API_KEY and GENAI_API_KEY != 'your_api_key_here' else 'fallback_mode'
+  return {
+    'status': 'ready',
+    'service': 'summarize',
+    'genai_provider': GENAI_PROVIDER,
+    'genai_status': genai_status,
+    'mode': 'production' if genai_status == 'configured' else 'mock'
+  }
+
+
 class TextPayload(BaseModel):
   text: str
   ratio: Optional[float] = 0.3
@@ -184,14 +197,34 @@ async def _invoke_genai(text: str, ratio: Optional[float]) -> Optional[str]:
 
 @app.post('/summarize')
 async def summarize_text(payload: TextPayload):
+  """Summarize endpoint with automatic GenAI fallback."""
   if not payload.text.strip():
     raise HTTPException(status_code=400, detail='Text is required')
 
+  # DEVOPS: Graceful degradation - try GenAI, fall back to mock
   if not GENAI_API_KEY or GENAI_API_KEY == 'your_api_key_here':
-    raise HTTPException(status_code=503, detail='GenAI API key not configured. Please set GENAI_API_KEY environment variable.')
+    # No API key configured - use fallback immediately
+    result = _fallback_summary(payload.text, payload.ratio)
+    return {
+      'result': result,
+      'mode': 'mock',
+      'reason': 'no_api_key'
+    }
 
+  # Try GenAI with automatic fallback
   summary = await _invoke_genai(payload.text, payload.ratio)
+  
   if summary is None:
-    raise HTTPException(status_code=502, detail='GenAI service unavailable. Please check your API key and network connection.')
+    # GenAI failed (rate limit, network, etc.) - use fallback
+    result = _fallback_summary(payload.text, payload.ratio)
+    return {
+      'result': result,
+      'mode': 'mock',
+      'reason': 'genai_unavailable'
+    }
 
-  return {'result': summary}
+  return {
+    'result': summary,
+    'mode': 'genai',
+    'provider': GENAI_PROVIDER
+  }

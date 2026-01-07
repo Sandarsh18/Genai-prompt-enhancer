@@ -1,0 +1,306 @@
+---
+# ========================================
+# Application Deployment Playbook
+# ========================================
+# Purpose: Deploy GenAI Prompt Enhancer to Kubernetes/Local
+# When to run: AFTER Kubernetes is set up
+# Execution: ansible-playbook playbooks/deploy-application.yml
+# ========================================
+
+- name: Deploy GenAI Prompt Enhancer Application
+  hosts: local
+  gather_facts: yes
+  become: no
+
+  vars:
+    deployment_mode: "local"  # Options: local, kubernetes
+    project_root: "/home/{{ ansible_user_id }}/projects/devops-el/genai-prompt-enhancer"
+
+  tasks:
+    # ==========================================
+    # TASK 1: Check deployment mode
+    # ==========================================
+    - name: Display deployment mode
+      debug:
+        msg:
+          - "=========================================="
+          - "GenAI Prompt Enhancer Deployment"
+          - "=========================================="
+          - "Deployment mode: {{ deployment_mode }}"
+          - "Project root: {{ project_root }}"
+      tags: [always]
+
+    # ==========================================
+    # TASK 2: Verify project structure
+    # ==========================================
+    - name: Check if project directory exists
+      stat:
+        path: "{{ project_root }}"
+      register: project_dir
+      tags: [verify]
+
+    - name: Fail if project directory not found
+      fail:
+        msg: "Project directory not found: {{ project_root }}"
+      when: not project_dir.stat.exists
+      tags: [verify]
+
+    - name: Verify critical files exist
+      stat:
+        path: "{{ project_root }}/{{ item }}"
+      loop:
+        - "start-dev.sh"
+        - "stop-dev.sh"
+        - "test-all.sh"
+        - "docker-compose.yml"
+        - "k8s"
+      register: critical_files
+      tags: [verify]
+
+    # ==========================================
+    # LOCAL DEPLOYMENT TASKS
+    # ==========================================
+    - name: Stop any running services (cleanup)
+      shell: "{{ project_root }}/stop-dev.sh"
+      args:
+        chdir: "{{ project_root }}"
+      ignore_errors: yes
+      when: deployment_mode == "local"
+      tags: [local, cleanup]
+
+    - name: Check if .env file exists
+      stat:
+        path: "{{ project_root }}/.env"
+      register: env_file
+      when: deployment_mode == "local"
+      tags: [local, config]
+
+    - name: Display .env warning if not configured
+      debug:
+        msg:
+          - "WARNING: .env file exists but may need configuration"
+          - "Please ensure GENAI_API_KEY is set in {{ project_root }}/.env"
+      when: deployment_mode == "local" and env_file.stat.exists
+      tags: [local, config]
+
+    - name: Make scripts executable
+      file:
+        path: "{{ project_root }}/{{ item }}"
+        mode: '0755'
+      loop:
+        - start-dev.sh
+        - stop-dev.sh
+        - status.sh
+        - test-all.sh
+      when: deployment_mode == "local"
+      tags: [local]
+
+    - name: Build Docker images for all services
+      shell: |
+        cd {{ project_root }}/{{ item }}
+        docker build -t genai-{{ item }} .
+      loop:
+        - rewrite-service
+        - summarize-service
+        - email-service
+        - nginx-gateway
+      when: deployment_mode == "local"
+      register: docker_builds
+      tags: [local, build]
+
+    - name: Display Docker build status
+      debug:
+        msg: "Docker images built successfully for all services"
+      when: deployment_mode == "local"
+      tags: [local, build]
+
+    - name: Start application services locally
+      shell: "{{ project_root }}/start-dev.sh"
+      args:
+        chdir: "{{ project_root }}"
+      async: 30
+      poll: 0
+      when: deployment_mode == "local"
+      register: start_services
+      tags: [local, deploy]
+
+    - name: Wait for services to start
+      wait_for:
+        host: localhost
+        port: "{{ item }}"
+        delay: 5
+        timeout: 60
+        state: started
+      loop:
+        - 8000  # rewrite
+        - 8001  # summarize
+        - 8002  # email
+        - 8088  # gateway
+        - 5173  # frontend
+      when: deployment_mode == "local"
+      ignore_errors: yes
+      tags: [local, deploy]
+
+    # ==========================================
+    # KUBERNETES DEPLOYMENT TASKS
+    # ==========================================
+    - name: Check if minikube is running
+      command: minikube status
+      register: minikube_status
+      ignore_errors: yes
+      changed_when: false
+      when: deployment_mode == "kubernetes"
+      tags: [kubernetes, check]
+
+    - name: Start minikube if not running
+      command: minikube start --driver=docker
+      when: deployment_mode == "kubernetes" and minikube_status.rc != 0
+      tags: [kubernetes, start]
+
+    - name: Build and push images to minikube
+      shell: |
+        eval $(minikube docker-env)
+        cd {{ project_root }}/{{ item }}
+        docker build -t genai-{{ item }}:latest .
+      loop:
+        - rewrite-service
+        - summarize-service
+        - email-service
+        - nginx-gateway
+      when: deployment_mode == "kubernetes"
+      tags: [kubernetes, build]
+
+    - name: Apply Kubernetes ConfigMap
+      command: kubectl apply -f {{ project_root }}/k8s/configmap.yaml
+      when: deployment_mode == "kubernetes"
+      tags: [kubernetes, deploy]
+
+    - name: Deploy all Kubernetes resources
+      command: kubectl apply -f {{ project_root }}/k8s/
+      when: deployment_mode == "kubernetes"
+      register: k8s_deploy
+      tags: [kubernetes, deploy]
+
+    - name: Wait for pods to be ready
+      shell: |
+        kubectl wait --for=condition=ready pod -l app={{ item }} --timeout=300s
+      loop:
+        - rewrite
+        - summarize
+        - email
+        - gateway
+        - frontend
+      when: deployment_mode == "kubernetes"
+      ignore_errors: yes
+      tags: [kubernetes, deploy]
+
+    - name: Get Kubernetes service URLs
+      command: minikube service {{ item }} --url
+      loop:
+        - gateway-service
+        - frontend-service
+      register: k8s_urls
+      when: deployment_mode == "kubernetes"
+      ignore_errors: yes
+      tags: [kubernetes, info]
+
+    # ==========================================
+    # TASK 3: Run health checks
+    # ==========================================
+    - name: Check service health (local mode)
+      uri:
+        url: "http://localhost:{{ item }}/health"
+        method: GET
+        status_code: 200
+      loop:
+        - 8000
+        - 8001
+        - 8002
+      when: deployment_mode == "local"
+      register: health_checks
+      ignore_errors: yes
+      tags: [verify, health]
+
+    - name: Display health check results
+      debug:
+        msg: "{{ health_checks.results | selectattr('status', 'defined') | map(attribute='status') | list }}"
+      when: deployment_mode == "local"
+      tags: [verify, health]
+
+    # ==========================================
+    # TASK 4: Run automated tests
+    # ==========================================
+    - name: Run test suite
+      shell: "{{ project_root }}/test-all.sh"
+      args:
+        chdir: "{{ project_root }}"
+      register: test_results
+      ignore_errors: yes
+      when: deployment_mode == "local"
+      tags: [test]
+
+    - name: Display test results
+      debug:
+        msg: "{{ test_results.stdout_lines }}"
+      when: deployment_mode == "local" and test_results is defined
+      tags: [test]
+
+    # ==========================================
+    # TASK 5: Display deployment summary
+    # ==========================================
+    - name: Display local deployment summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Deployment Complete! (Local Mode)"
+          - "=========================================="
+          - "Frontend:  http://localhost:5173"
+          - "Gateway:   http://localhost:8088"
+          - "Rewrite:   http://localhost:8000/docs"
+          - "Summarize: http://localhost:8001/docs"
+          - "Email:     http://localhost:8002/docs"
+          - ""
+          - "Management Commands:"
+          - "  Status:  {{ project_root }}/status.sh"
+          - "  Stop:    {{ project_root }}/stop-dev.sh"
+          - "  Logs:    tail -f {{ project_root }}/logs/*.log"
+          - ""
+          - "Test results: {{ test_results.rc == 0 | ternary('PASSED ✓', 'FAILED ✗') }}"
+      when: deployment_mode == "local"
+      tags: [summary]
+
+    - name: Display Kubernetes deployment summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Deployment Complete! (Kubernetes Mode)"
+          - "=========================================="
+          - "View pods:     kubectl get pods"
+          - "View services: kubectl get svc"
+          - "View all:      kubectl get all"
+          - ""
+          - "Access dashboard: minikube dashboard"
+          - "Service URLs: Run 'minikube service list'"
+          - ""
+          - "Useful commands:"
+          - "  Logs: kubectl logs -f <pod-name>"
+          - "  Scale: kubectl scale deployment <name> --replicas=3"
+          - "  Delete: kubectl delete -f k8s/"
+      when: deployment_mode == "kubernetes"
+      tags: [summary]
+
+# ==========================================
+# Expected Output:
+# LOCAL MODE:
+# - All Docker images built
+# - Services running on localhost
+# - Health checks passed
+# - Tests executed
+# - Application accessible at localhost:5173
+#
+# KUBERNETES MODE:
+# - Images pushed to minikube registry
+# - All pods running and ready
+# - Services exposed via NodePort
+# - Application accessible via minikube URLs
+# ==========================================

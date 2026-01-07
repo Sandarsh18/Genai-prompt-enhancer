@@ -1,0 +1,280 @@
+---
+# ========================================
+# Kubernetes Tools Installation Playbook
+# ========================================
+# Purpose: Install kubectl, minikube, and configure Kubernetes
+# When to run: AFTER install-docker.yml
+# Execution: ansible-playbook playbooks/install-kubernetes.yml
+# ========================================
+
+- name: Install Kubernetes Tools (kubectl and minikube)
+  hosts: local
+  gather_facts: yes
+  become: yes
+
+  vars:
+    kubectl_version: "1.28.0"
+    minikube_version: "latest"
+    kubernetes_apt_key_url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+    kubernetes_apt_repository: "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+
+  tasks:
+    # ==========================================
+    # TASK 1: Check if kubectl is installed
+    # ==========================================
+    - name: Check if kubectl is already installed
+      command: kubectl version --client --short
+      register: kubectl_check
+      ignore_errors: yes
+      changed_when: false
+      tags: [check]
+
+    - name: Display kubectl status
+      debug:
+        msg: "{{ kubectl_check.rc == 0 | ternary('kubectl is already installed', 'kubectl not found. Installing...') }}"
+      tags: [check]
+
+    # ==========================================
+    # TASK 2: Install kubectl
+    # ==========================================
+    - name: Download kubectl binary
+      get_url:
+        url: "https://dl.k8s.io/release/v{{ kubectl_version }}/bin/linux/amd64/kubectl"
+        dest: /tmp/kubectl
+        mode: '0755'
+      when: kubectl_check.rc != 0
+      tags: [kubectl]
+
+    - name: Install kubectl to /usr/local/bin
+      copy:
+        src: /tmp/kubectl
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+        remote_src: yes
+      when: kubectl_check.rc != 0
+      tags: [kubectl]
+
+    - name: Verify kubectl installation
+      command: kubectl version --client --short
+      register: kubectl_version_output
+      changed_when: false
+      tags: [kubectl]
+
+    # ==========================================
+    # TASK 3: Install kubectl bash completion
+    # ==========================================
+    - name: Install kubectl bash completion
+      shell: kubectl completion bash > /etc/bash_completion.d/kubectl
+      args:
+        creates: /etc/bash_completion.d/kubectl
+      tags: [kubectl]
+
+    # ==========================================
+    # TASK 4: Check if minikube is installed
+    # ==========================================
+    - name: Check if minikube is already installed
+      command: minikube version
+      register: minikube_check
+      ignore_errors: yes
+      changed_when: false
+      tags: [check]
+
+    - name: Display minikube status
+      debug:
+        msg: "{{ minikube_check.rc == 0 | ternary('minikube is already installed', 'minikube not found. Installing...') }}"
+      tags: [check]
+
+    # ==========================================
+    # TASK 5: Install minikube
+    # ==========================================
+    - name: Download minikube binary
+      get_url:
+        url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        dest: /tmp/minikube
+        mode: '0755'
+      when: minikube_check.rc != 0
+      tags: [minikube]
+
+    - name: Install minikube to /usr/local/bin
+      copy:
+        src: /tmp/minikube
+        dest: /usr/local/bin/minikube
+        mode: '0755'
+        remote_src: yes
+      when: minikube_check.rc != 0
+      tags: [minikube]
+
+    - name: Verify minikube installation
+      command: minikube version
+      register: minikube_version_output
+      changed_when: false
+      tags: [minikube]
+
+    # ==========================================
+    # TASK 6: Configure minikube (optional)
+    # ==========================================
+    - name: Set minikube default driver to docker
+      command: minikube config set driver docker
+      become: no
+      ignore_errors: yes
+      tags: [minikube, config]
+
+    - name: Set minikube default memory
+      command: minikube config set memory 4096
+      become: no
+      ignore_errors: yes
+      tags: [minikube, config]
+
+    - name: Set minikube default CPUs
+      command: minikube config set cpus 2
+      become: no
+      ignore_errors: yes
+      tags: [minikube, config]
+
+    # ==========================================
+    # TASK 7: Install helm (Kubernetes package manager)
+    # ==========================================
+    - name: Check if helm is installed
+      command: helm version
+      register: helm_check
+      ignore_errors: yes
+      changed_when: false
+      tags: [helm]
+
+    - name: Download helm installation script
+      get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get_helm.sh
+        mode: '0755'
+      when: helm_check.rc != 0
+      tags: [helm]
+
+    - name: Install helm
+      command: bash /tmp/get_helm.sh
+      when: helm_check.rc != 0
+      tags: [helm]
+
+    - name: Verify helm installation
+      command: helm version
+      register: helm_version_output
+      changed_when: false
+      ignore_errors: yes
+      tags: [helm]
+
+    # ==========================================
+    # TASK 8: Create Kubernetes config directory
+    # ==========================================
+    - name: Create .kube directory for user
+      file:
+        path: "/home/{{ ansible_user_id }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+      tags: [config]
+
+    # ==========================================
+    # TASK 9: Install k9s (Kubernetes CLI UI)
+    # ==========================================
+    - name: Check if k9s is installed
+      command: k9s version
+      register: k9s_check
+      ignore_errors: yes
+      changed_when: false
+      tags: [k9s]
+
+    - name: Download k9s
+      get_url:
+        url: https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz
+        dest: /tmp/k9s.tar.gz
+      when: k9s_check.rc != 0
+      tags: [k9s]
+
+    - name: Extract k9s
+      unarchive:
+        src: /tmp/k9s.tar.gz
+        dest: /tmp/
+        remote_src: yes
+      when: k9s_check.rc != 0
+      tags: [k9s]
+
+    - name: Install k9s
+      copy:
+        src: /tmp/k9s
+        dest: /usr/local/bin/k9s
+        mode: '0755'
+        remote_src: yes
+      when: k9s_check.rc != 0
+      tags: [k9s]
+
+    # ==========================================
+    # TASK 10: Create useful kubectl aliases
+    # ==========================================
+    - name: Create kubectl aliases file
+      copy:
+        dest: "/home/{{ ansible_user_id }}/.kubectl_aliases"
+        content: |
+          # Kubernetes kubectl aliases
+          alias k='kubectl'
+          alias kgp='kubectl get pods'
+          alias kgs='kubectl get svc'
+          alias kgd='kubectl get deployments'
+          alias kgn='kubectl get nodes'
+          alias kga='kubectl get all'
+          alias kdp='kubectl describe pod'
+          alias kds='kubectl describe service'
+          alias kdd='kubectl describe deployment'
+          alias klf='kubectl logs -f'
+          alias kex='kubectl exec -it'
+          alias kaf='kubectl apply -f'
+          alias kdf='kubectl delete -f'
+        mode: '0644'
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+      tags: [config]
+
+    - name: Add kubectl aliases to .bashrc
+      lineinfile:
+        path: "/home/{{ ansible_user_id }}/.bashrc"
+        line: "source ~/.kubectl_aliases"
+        create: yes
+      tags: [config]
+
+    # ==========================================
+    # TASK 11: Display installation summary
+    # ==========================================
+    - name: Display Kubernetes tools installation summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Kubernetes Tools Installation Complete!"
+          - "=========================================="
+          - "kubectl: {{ kubectl_version_output.stdout | default('Installed') }}"
+          - "minikube: {{ minikube_version_output.stdout | default('Installed') }}"
+          - "helm: {{ helm_version_output.stdout | default('Not installed') }}"
+          - "k9s: {{ k9s_check.rc == 0 | ternary('Already installed', 'Newly installed') }}"
+          - ""
+          - "Useful commands:"
+          - "  Start minikube: minikube start"
+          - "  Check status:   minikube status"
+          - "  View dashboard: minikube dashboard"
+          - "  Stop minikube:  minikube stop"
+          - ""
+          - "kubectl aliases added to .bashrc"
+          - "Source it: source ~/.bashrc"
+          - ""
+          - "Next steps:"
+          - "1. Start minikube: minikube start --driver=docker"
+          - "2. Verify: kubectl get nodes"
+          - "3. Run: ansible-playbook playbooks/deploy-application.yml"
+      tags: [summary]
+
+# ==========================================
+# Expected Output:
+# - kubectl installed and configured
+# - minikube installed with docker driver
+# - helm package manager installed
+# - k9s CLI UI installed
+# - Useful aliases configured
+# - Ready to deploy applications to Kubernetes
+# ==========================================

@@ -1,0 +1,213 @@
+---
+# ========================================
+# Environment Setup Playbook
+# ========================================
+# Purpose: Prepare the system with all required dependencies
+# When to run: FIRST TIME - Before any other playbooks
+# Execution: ansible-playbook playbooks/setup-environment.yml
+# ========================================
+
+- name: Setup Development Environment for GenAI Prompt Enhancer
+  hosts: local
+  gather_facts: yes
+  become: yes
+
+  vars:
+    required_packages:
+      - git
+      - curl
+      - wget
+      - python3
+      - python3-pip
+      - python3-venv
+      - build-essential
+      - apt-transport-https
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - jq
+      - vim
+      - htop
+      - net-tools
+
+  tasks:
+    # ==========================================
+    # TASK 1: Display System Information
+    # ==========================================
+    - name: Display system information
+      debug:
+        msg:
+          - "Operating System: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Hostname: {{ ansible_hostname }}"
+          - "Architecture: {{ ansible_architecture }}"
+          - "Python Version: {{ ansible_python_version }}"
+          - "Total Memory: {{ ansible_memtotal_mb }} MB"
+          - "CPU Cores: {{ ansible_processor_vcpus }}"
+      tags: [info]
+
+    # ==========================================
+    # TASK 2: Update Package Cache
+    # ==========================================
+    - name: Update apt package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      tags: [packages]
+
+    # ==========================================
+    # TASK 3: Install System Dependencies
+    # ==========================================
+    - name: Install required system packages
+      apt:
+        name: "{{ required_packages }}"
+        state: present
+      when: ansible_os_family == "Debian"
+      register: package_install
+      tags: [packages]
+
+    - name: Display package installation results
+      debug:
+        msg: "{{ package_install.changed | ternary('Packages installed successfully', 'Packages already present') }}"
+      tags: [packages]
+
+    # ==========================================
+    # TASK 4: Install Python Dependencies
+    # ==========================================
+    - name: Upgrade pip to latest version
+      pip:
+        name: pip
+        state: latest
+        executable: pip3
+      tags: [python]
+
+    - name: Install Python packages for project
+      pip:
+        name:
+          - fastapi
+          - uvicorn
+          - httpx
+          - python-dotenv
+          - pydantic
+          - prometheus-fastapi-instrumentator
+        state: present
+        executable: pip3
+      tags: [python]
+
+    # ==========================================
+    # TASK 5: Install Node.js and npm (for frontend)
+    # ==========================================
+    - name: Check if Node.js is installed
+      command: node --version
+      register: node_check
+      ignore_errors: yes
+      changed_when: false
+      tags: [nodejs]
+
+    - name: Download Node.js setup script
+      get_url:
+        url: https://deb.nodesource.com/setup_20.x
+        dest: /tmp/nodesource_setup.sh
+        mode: '0755'
+      when: node_check.rc != 0
+      tags: [nodejs]
+
+    - name: Run Node.js setup script
+      command: bash /tmp/nodesource_setup.sh
+      when: node_check.rc != 0
+      tags: [nodejs]
+
+    - name: Install Node.js and npm
+      apt:
+        name:
+          - nodejs
+        state: present
+      when: node_check.rc != 0
+      tags: [nodejs]
+
+    - name: Verify Node.js installation
+      command: node --version
+      register: node_version
+      changed_when: false
+      tags: [nodejs]
+
+    - name: Display Node.js version
+      debug:
+        msg: "Node.js version: {{ node_version.stdout }}"
+      tags: [nodejs]
+
+    # ==========================================
+    # TASK 6: Create Project Directories
+    # ==========================================
+    - name: Ensure project directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ project_root }}/logs"
+        - "{{ project_root }}/data"
+        - "{{ project_root }}/backups"
+        - "{{ project_root }}/monitoring"
+      tags: [directories]
+
+    # ==========================================
+    # TASK 7: Set up environment file template
+    # ==========================================
+    - name: Check if .env file exists
+      stat:
+        path: "{{ project_root }}/.env"
+      register: env_file
+      tags: [config]
+
+    - name: Create .env file if not exists
+      copy:
+        dest: "{{ project_root }}/.env"
+        content: |
+          # GenAI API Configuration
+          GENAI_PROVIDER=gemini
+          GENAI_MODEL=gemini-1.5-flash
+          GENAI_API_KEY=your_api_key_here
+          GENAI_TIMEOUT=8
+          
+          # Application Configuration
+          REWRITE_PORT=8000
+          SUMMARIZE_PORT=8001
+          EMAIL_PORT=8002
+          GATEWAY_PORT=8088
+          FRONTEND_PORT=5173
+          
+          # Environment
+          ENVIRONMENT=development
+        mode: '0600'
+      when: not env_file.stat.exists
+      tags: [config]
+
+    # ==========================================
+    # TASK 8: System Verification Summary
+    # ==========================================
+    - name: Display setup completion summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Environment Setup Complete!"
+          - "=========================================="
+          - "Python 3: Installed"
+          - "Node.js: {{ node_version.stdout | default('Already installed') }}"
+          - "System packages: {{ package_install.changed | ternary('Installed', 'Already present') }}"
+          - "Project directories: Created"
+          - "Configuration: Ready"
+          - ""
+          - "Next steps:"
+          - "1. Run: ansible-playbook playbooks/install-docker.yml"
+          - "2. Configure your GenAI API key in .env file"
+      tags: [summary]
+
+# ==========================================
+# Expected Output:
+# - All system packages installed
+# - Python environment configured
+# - Node.js and npm installed
+# - Project directories created
+# - Environment file template created
+# ==========================================

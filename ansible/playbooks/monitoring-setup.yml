@@ -1,0 +1,470 @@
+---
+# ========================================
+# Monitoring and Observability Setup Playbook
+# ========================================
+# Purpose: Configure monitoring with Prometheus, Grafana, and alerts
+# When to run: OPTIONAL - After application deployment
+# Execution: ansible-playbook playbooks/monitoring-setup.yml
+# ========================================
+
+- name: Setup Monitoring and Observability Stack
+  hosts: local
+  gather_facts: yes
+  become: yes
+
+  vars:
+    project_root: "/home/{{ ansible_user_id }}/projects/devops-el/genai-prompt-enhancer"
+    monitoring_dir: "{{ project_root }}/monitoring"
+    prometheus_version: "2.48.0"
+    grafana_version: "latest"
+    prometheus_port: 9090
+    grafana_port: 3000
+
+  tasks:
+    # ==========================================
+    # TASK 1: Create monitoring directories
+    # ==========================================
+    - name: Create monitoring directory structure
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+      loop:
+        - "{{ monitoring_dir }}"
+        - "{{ monitoring_dir }}/prometheus"
+        - "{{ monitoring_dir }}/grafana"
+        - "{{ monitoring_dir }}/dashboards"
+        - "{{ monitoring_dir }}/alerts"
+      tags: [setup]
+
+    # ==========================================
+    # TASK 2: Create Prometheus configuration
+    # ==========================================
+    - name: Create Prometheus configuration file
+      copy:
+        dest: "{{ monitoring_dir }}/prometheus/prometheus.yml"
+        content: |
+          # Prometheus Configuration for GenAI Prompt Enhancer
+          global:
+            scrape_interval: 15s
+            evaluation_interval: 15s
+            external_labels:
+              cluster: 'genai-prompt-enhancer'
+              environment: 'development'
+
+          # Alertmanager configuration
+          alerting:
+            alertmanagers:
+              - static_configs:
+                  - targets: []
+
+          # Load rules once and periodically evaluate them
+          rule_files:
+            - "/etc/prometheus/alerts/*.yml"
+
+          # Scrape configurations
+          scrape_configs:
+            # Prometheus itself
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9090']
+
+            # Rewrite Service
+            - job_name: 'rewrite-service'
+              metrics_path: '/metrics'
+              static_configs:
+                - targets: ['localhost:8000']
+              relabel_configs:
+                - source_labels: [__address__]
+                  target_label: instance
+                  replacement: 'rewrite-service'
+
+            # Summarize Service
+            - job_name: 'summarize-service'
+              metrics_path: '/metrics'
+              static_configs:
+                - targets: ['localhost:8001']
+              relabel_configs:
+                - source_labels: [__address__]
+                  target_label: instance
+                  replacement: 'summarize-service'
+
+            # Email Service
+            - job_name: 'email-service'
+              metrics_path: '/metrics'
+              static_configs:
+                - targets: ['localhost:8002']
+              relabel_configs:
+                - source_labels: [__address__]
+                  target_label: instance
+                  replacement: 'email-service'
+
+            # NGINX Gateway
+            - job_name: 'nginx-gateway'
+              static_configs:
+                - targets: ['localhost:8088']
+              relabel_configs:
+                - source_labels: [__address__]
+                  target_label: instance
+                  replacement: 'nginx-gateway'
+
+            # Node Exporter (system metrics)
+            - job_name: 'node-exporter'
+              static_configs:
+                - targets: ['localhost:9100']
+        mode: '0644'
+      tags: [prometheus, config]
+
+    # ==========================================
+    # TASK 3: Create Prometheus alert rules
+    # ==========================================
+    - name: Create Prometheus alert rules
+      copy:
+        dest: "{{ monitoring_dir }}/alerts/application_alerts.yml"
+        content: |
+          # Alert Rules for GenAI Prompt Enhancer
+          groups:
+            - name: application_alerts
+              interval: 30s
+              rules:
+                # Service Down Alert
+                - alert: ServiceDown
+                  expr: up == 0
+                  for: 1m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: "Service {{ $labels.instance }} is down"
+                    description: "{{ $labels.job }} has been down for more than 1 minute"
+
+                # High Response Time
+                - alert: HighResponseTime
+                  expr: http_request_duration_seconds{quantile="0.95"} > 2
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "High response time on {{ $labels.instance }}"
+                    description: "95th percentile response time is {{ $value }}s"
+
+                # High Error Rate
+                - alert: HighErrorRate
+                  expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "High error rate on {{ $labels.instance }}"
+                    description: "Error rate is {{ $value }} requests/sec"
+
+                # High Memory Usage
+                - alert: HighMemoryUsage
+                  expr: (node_memory_Active_bytes / node_memory_MemTotal_bytes) > 0.9
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "High memory usage detected"
+                    description: "Memory usage is above 90%"
+        mode: '0644'
+      tags: [prometheus, alerts]
+
+    # ==========================================
+    # TASK 4: Create Docker Compose for monitoring
+    # ==========================================
+    - name: Create Docker Compose file for monitoring stack
+      copy:
+        dest: "{{ monitoring_dir }}/docker-compose.yml"
+        content: |
+          version: '3.8'
+
+          services:
+            # Prometheus - Metrics collection
+            prometheus:
+              image: prom/prometheus:v{{ prometheus_version }}
+              container_name: prometheus
+              restart: unless-stopped
+              volumes:
+                - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+                - ./alerts:/etc/prometheus/alerts
+                - prometheus_data:/prometheus
+              command:
+                - '--config.file=/etc/prometheus/prometheus.yml'
+                - '--storage.tsdb.path=/prometheus'
+                - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+                - '--web.console.templates=/usr/share/prometheus/consoles'
+              ports:
+                - "{{ prometheus_port }}:9090"
+              networks:
+                - monitoring
+
+            # Grafana - Visualization
+            grafana:
+              image: grafana/grafana:{{ grafana_version }}
+              container_name: grafana
+              restart: unless-stopped
+              environment:
+                - GF_SECURITY_ADMIN_PASSWORD=admin
+                - GF_USERS_ALLOW_SIGN_UP=false
+                - GF_SERVER_ROOT_URL=http://localhost:{{ grafana_port }}
+              volumes:
+                - grafana_data:/var/lib/grafana
+                - ./dashboards:/etc/grafana/provisioning/dashboards
+              ports:
+                - "{{ grafana_port }}:3000"
+              networks:
+                - monitoring
+              depends_on:
+                - prometheus
+
+            # Node Exporter - System metrics
+            node-exporter:
+              image: prom/node-exporter:latest
+              container_name: node-exporter
+              restart: unless-stopped
+              volumes:
+                - /proc:/host/proc:ro
+                - /sys:/host/sys:ro
+                - /:/rootfs:ro
+              command:
+                - '--path.procfs=/host/proc'
+                - '--path.sysfs=/host/sys'
+                - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+              ports:
+                - "9100:9100"
+              networks:
+                - monitoring
+
+          networks:
+            monitoring:
+              driver: bridge
+
+          volumes:
+            prometheus_data:
+            grafana_data:
+        mode: '0644'
+      tags: [monitoring, docker-compose]
+
+    # ==========================================
+    # TASK 5: Create Grafana dashboard configuration
+    # ==========================================
+    - name: Create Grafana dashboard provisioning
+      copy:
+        dest: "{{ monitoring_dir }}/dashboards/dashboard.yml"
+        content: |
+          apiVersion: 1
+
+          providers:
+            - name: 'GenAI Dashboards'
+              orgId: 1
+              folder: ''
+              type: file
+              disableDeletion: false
+              updateIntervalSeconds: 10
+              allowUiUpdates: true
+              options:
+                path: /etc/grafana/provisioning/dashboards
+        mode: '0644'
+      tags: [grafana, config]
+
+    # ==========================================
+    # TASK 6: Create Grafana data source configuration
+    # ==========================================
+    - name: Create Grafana datasource for Prometheus
+      copy:
+        dest: "{{ monitoring_dir }}/grafana/datasource.yml"
+        content: |
+          apiVersion: 1
+
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              access: proxy
+              url: http://prometheus:9090
+              isDefault: true
+              editable: true
+        mode: '0644'
+      tags: [grafana, config]
+
+    # ==========================================
+    # TASK 7: Create monitoring startup script
+    # ==========================================
+    - name: Create monitoring startup script
+      copy:
+        dest: "{{ monitoring_dir }}/start-monitoring.sh"
+        content: |
+          #!/bin/bash
+          # Start monitoring stack
+          
+          echo "Starting Prometheus & Grafana monitoring stack..."
+          cd "{{ monitoring_dir }}"
+          
+          docker-compose up -d
+          
+          echo "Waiting for services to start..."
+          sleep 10
+          
+          echo "==========================================="
+          echo "Monitoring Stack Started Successfully!"
+          echo "==========================================="
+          echo "Prometheus: http://localhost:{{ prometheus_port }}"
+          echo "Grafana:    http://localhost:{{ grafana_port }}"
+          echo "  Username: admin"
+          echo "  Password: admin"
+          echo ""
+          echo "Node Exporter: http://localhost:9100/metrics"
+          echo ""
+          echo "Stop monitoring: docker-compose down"
+        mode: '0755'
+      tags: [monitoring, scripts]
+
+    - name: Create monitoring stop script
+      copy:
+        dest: "{{ monitoring_dir }}/stop-monitoring.sh"
+        content: |
+          #!/bin/bash
+          # Stop monitoring stack
+          
+          echo "Stopping monitoring stack..."
+          cd "{{ monitoring_dir }}"
+          docker-compose down
+          echo "Monitoring stack stopped."
+        mode: '0755'
+      tags: [monitoring, scripts]
+
+    # ==========================================
+    # TASK 8: Create monitoring README
+    # ==========================================
+    - name: Create monitoring README
+      copy:
+        dest: "{{ monitoring_dir }}/README.md"
+        content: |
+          # Monitoring Stack for GenAI Prompt Enhancer
+
+          ## Components
+          - **Prometheus**: Metrics collection and storage
+          - **Grafana**: Metrics visualization and dashboards
+          - **Node Exporter**: System-level metrics
+
+          ## Quick Start
+
+          ### Start Monitoring
+          ```bash
+          ./start-monitoring.sh
+          ```
+
+          ### Access Dashboards
+          - **Prometheus**: http://localhost:9090
+          - **Grafana**: http://localhost:3000 (admin/admin)
+
+          ### Stop Monitoring
+          ```bash
+          ./stop-monitoring.sh
+          ```
+
+          ## Available Metrics
+
+          ### Application Metrics
+          - HTTP request rates
+          - Response times (p50, p95, p99)
+          - Error rates
+          - Active requests
+
+          ### System Metrics
+          - CPU usage
+          - Memory usage
+          - Disk I/O
+          - Network traffic
+
+          ## Grafana Dashboards
+
+          ### Creating Custom Dashboards
+          1. Login to Grafana (admin/admin)
+          2. Click "+" → "Dashboard"
+          3. Add Panel → Select Prometheus data source
+          4. Use PromQL queries to visualize metrics
+
+          ### Sample Queries
+          ```promql
+          # Request rate
+          rate(http_requests_total[5m])
+
+          # Response time (95th percentile)
+          histogram_quantile(0.95, http_request_duration_seconds_bucket)
+
+          # Error rate
+          rate(http_requests_total{status=~"5.."}[5m])
+          ```
+
+          ## Alerts
+          Alert rules are defined in `alerts/application_alerts.yml`
+
+          Current alerts:
+          - Service Down (critical)
+          - High Response Time (warning)
+          - High Error Rate (warning)
+          - High Memory Usage (warning)
+
+          ## Troubleshooting
+          - Check logs: `docker-compose logs -f`
+          - Restart: `docker-compose restart`
+          - Clean restart: `docker-compose down && docker-compose up -d`
+        mode: '0644'
+      tags: [monitoring, docs]
+
+    # ==========================================
+    # TASK 9: Start monitoring stack (optional)
+    # ==========================================
+    - name: Ask to start monitoring stack
+      pause:
+        prompt: "Do you want to start the monitoring stack now? (yes/no)"
+      register: start_monitoring
+      tags: [start]
+
+    - name: Start monitoring stack
+      shell: "{{ monitoring_dir }}/start-monitoring.sh"
+      when: start_monitoring.user_input | bool
+      tags: [start]
+
+    # ==========================================
+    # TASK 10: Display setup summary
+    # ==========================================
+    - name: Display monitoring setup summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Monitoring Setup Complete!"
+          - "=========================================="
+          - "Location: {{ monitoring_dir }}"
+          - ""
+          - "Start monitoring:"
+          - "  cd {{ monitoring_dir }}"
+          - "  ./start-monitoring.sh"
+          - ""
+          - "Access URLs:"
+          - "  Prometheus: http://localhost:{{ prometheus_port }}"
+          - "  Grafana:    http://localhost:{{ grafana_port }} (admin/admin)"
+          - "  Node Exporter: http://localhost:9100/metrics"
+          - ""
+          - "Configuration files:"
+          - "  Prometheus: {{ monitoring_dir }}/prometheus/prometheus.yml"
+          - "  Alerts:     {{ monitoring_dir }}/alerts/application_alerts.yml"
+          - "  Grafana:    {{ monitoring_dir }}/grafana/datasource.yml"
+          - ""
+          - "Stop monitoring:"
+          - "  cd {{ monitoring_dir }}"
+          - "  ./stop-monitoring.sh"
+      tags: [summary]
+
+# ==========================================
+# Expected Output:
+# - Prometheus configuration created
+# - Grafana configuration created
+# - Alert rules defined
+# - Docker Compose file for monitoring stack
+# - Startup/stop scripts created
+# - Documentation generated
+# - Ready to start monitoring stack
+# ==========================================

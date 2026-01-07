@@ -1,0 +1,230 @@
+---
+# ========================================
+# Docker Installation Playbook
+# ========================================
+# Purpose: Install and configure Docker and Docker Compose
+# When to run: AFTER setup-environment.yml
+# Execution: ansible-playbook playbooks/install-docker.yml
+# ========================================
+
+- name: Install Docker and Docker Compose
+  hosts: local
+  gather_facts: yes
+  become: yes
+
+  vars:
+    docker_apt_key_url: https://download.docker.com/linux/ubuntu/gpg
+    docker_apt_repository: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    docker_compose_version: "2.24.0"
+
+  tasks:
+    # ==========================================
+    # TASK 1: Check if Docker is already installed
+    # ==========================================
+    - name: Check if Docker is already installed
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+      changed_when: false
+      tags: [check]
+
+    - name: Display Docker status
+      debug:
+        msg: "{{ docker_check.rc == 0 | ternary('Docker is already installed: ' + docker_check.stdout, 'Docker is not installed. Proceeding with installation...') }}"
+      tags: [check]
+
+    # ==========================================
+    # TASK 2: Remove old Docker versions
+    # ==========================================
+    - name: Remove old Docker versions (if any)
+      apt:
+        name:
+          - docker
+          - docker-engine
+          - docker.io
+          - containerd
+          - runc
+        state: absent
+      when: docker_check.rc != 0
+      tags: [cleanup]
+
+    # ==========================================
+    # TASK 3: Install Docker prerequisites
+    # ==========================================
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: yes
+      when: docker_check.rc != 0
+      tags: [prerequisites]
+
+    # ==========================================
+    # TASK 4: Add Docker GPG key
+    # ==========================================
+    - name: Create directory for Docker GPG key
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      when: docker_check.rc != 0
+      tags: [install]
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: "{{ docker_apt_key_url }}"
+        state: present
+      when: docker_check.rc != 0
+      tags: [install]
+
+    # ==========================================
+    # TASK 5: Add Docker repository
+    # ==========================================
+    - name: Add Docker apt repository
+      apt_repository:
+        repo: "{{ docker_apt_repository }}"
+        state: present
+        filename: docker
+      when: docker_check.rc != 0
+      tags: [install]
+
+    # ==========================================
+    # TASK 6: Install Docker Engine
+    # ==========================================
+    - name: Update apt cache after adding Docker repo
+      apt:
+        update_cache: yes
+      when: docker_check.rc != 0
+      tags: [install]
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+      when: docker_check.rc != 0
+      register: docker_install
+      tags: [install]
+
+    # ==========================================
+    # TASK 7: Start and enable Docker service
+    # ==========================================
+    - name: Ensure Docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      tags: [service]
+
+    # ==========================================
+    # TASK 8: Add current user to docker group
+    # ==========================================
+    - name: Add current user to docker group
+      user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: yes
+      become: yes
+      tags: [permissions]
+
+    - name: Display docker group message
+      debug:
+        msg:
+          - "User {{ ansible_user_id }} added to docker group"
+          - "IMPORTANT: You need to log out and log back in for group changes to take effect"
+          - "Alternatively, run: newgrp docker"
+      tags: [permissions]
+
+    # ==========================================
+    # TASK 9: Verify Docker installation
+    # ==========================================
+    - name: Get Docker version
+      command: docker --version
+      register: docker_version_output
+      changed_when: false
+      tags: [verify]
+
+    - name: Get Docker Compose version
+      command: docker compose version
+      register: docker_compose_output
+      changed_when: false
+      tags: [verify]
+
+    - name: Test Docker with hello-world
+      command: docker run --rm hello-world
+      register: docker_test
+      changed_when: false
+      ignore_errors: yes
+      tags: [verify]
+
+    # ==========================================
+    # TASK 10: Configure Docker daemon
+    # ==========================================
+    - name: Create Docker daemon configuration
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "10m",
+              "max-file": "3"
+            },
+            "storage-driver": "overlay2",
+            "default-address-pools": [
+              {
+                "base": "172.17.0.0/12",
+                "size": 24
+              }
+            ]
+          }
+        mode: '0644'
+      notify: restart docker
+      tags: [config]
+
+    # ==========================================
+    # TASK 11: Display installation summary
+    # ==========================================
+    - name: Display Docker installation summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Docker Installation Complete!"
+          - "=========================================="
+          - "Docker version: {{ docker_version_output.stdout }}"
+          - "Docker Compose: {{ docker_compose_output.stdout }}"
+          - "Docker test: {{ docker_test.rc == 0 | ternary('PASSED', 'FAILED - May need logout/login') }}"
+          - "User: {{ ansible_user_id }} added to docker group"
+          - ""
+          - "Next steps:"
+          - "1. Log out and log back in (or run: newgrp docker)"
+          - "2. Verify: docker run hello-world"
+          - "3. Run: ansible-playbook playbooks/install-kubernetes.yml"
+      tags: [summary]
+
+  # ==========================================
+  # HANDLERS (triggered by notify)
+  # ==========================================
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
+
+# ==========================================
+# Expected Output:
+# - Docker Engine installed and running
+# - Docker Compose plugin installed
+# - User added to docker group
+# - Docker daemon configured with best practices
+# - hello-world container successfully runs
+# ==========================================
