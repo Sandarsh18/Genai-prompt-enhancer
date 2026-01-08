@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: email-service
+  namespace: genai-prompt-enhancer
   labels:
     app: email
     tier: backend
@@ -18,8 +19,8 @@ spec:
     spec:
       containers:
         - name: email
-          image: email-service:latest
-          imagePullPolicy: Never
+          image: ghcr.io/devops-el/genai-prompt-enhancer/email-service:latest
+          imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
                 name: genai-shared-config

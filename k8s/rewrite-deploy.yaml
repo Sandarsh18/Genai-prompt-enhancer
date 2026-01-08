@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: rewrite-service
+  namespace: genai-prompt-enhancer
   labels:
     app: rewrite
     tier: backend
@@ -18,8 +19,8 @@ spec:
     spec:
       containers:
         - name: rewrite
-          image: rewrite-service:latest
-          imagePullPolicy: Never
+          image: ghcr.io/devops-el/genai-prompt-enhancer/rewrite-service:latest
+          imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
                 name: genai-shared-config

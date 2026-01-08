@@ -17,7 +17,11 @@ on:
           - production
 
 env:
-  KUBECTL_VERSION: '1.28.0'
+  KUBECTL_VERSION: '1.29.2'
+  KIND_CLUSTER_NAME: genai-ci
+  NAMESPACE: genai-prompt-enhancer
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository }}
+  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   deploy:
@@ -29,108 +33,176 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Set up kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: ${{ env.KUBECTL_VERSION }}
-      
-      - name: Configure Kubernetes context
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          wait: 120s
+
+      - name: Build and load images into kind
+        env:
+          REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          TAG: ${{ env.IMAGE_TAG }}
+          KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}
         run: |
-          echo "${{ secrets.KUBECONFIG }}" | base64 -d > kubeconfig.yaml
-          export KUBECONFIG=kubeconfig.yaml
-          kubectl config current-context
-      
-      - name: Create namespace if not exists
-        run: |
-          kubectl create namespace genai-prompt-enhancer --dry-run=client -o yaml | kubectl apply -f -
-      
-      - name: Create secrets
-        run: |
-          kubectl create secret generic genai-secret \
-            --from-literal=api-key="${{ secrets.GENAI_API_KEY }}" \
-            --namespace=genai-prompt-enhancer \
-            --dry-run=client -o yaml | kubectl apply -f -
-      
-      - name: Update image tags
-        run: |
-          TAG=${GITHUB_SHA::7}
-          for file in k8s/*-deploy.yaml; do
-            sed -i "s|:latest|:${TAG}|g" $file
+          set -euo pipefail
+          services=(rewrite-service summarize-service email-service nginx-gateway frontend)
+          for svc in "${services[@]}"; do
+            build_args=""
+            if [ "$svc" = "frontend" ]; then
+              build_args="--build-arg VITE_GATEWAY_URL=http://nginx-gateway:8080"
+            fi
+            docker build $build_args -t ${REGISTRY}/${svc}:${TAG} ${svc}
+            kind load docker-image ${REGISTRY}/${svc}:${TAG} --name ${KIND_CLUSTER_NAME}
           done
-      
-      - name: Deploy ConfigMap
+
+      - name: Create namespace
         run: |
-          kubectl apply -f k8s/configmap.yaml -n genai-prompt-enhancer
-      
-      - name: Deploy services
+          kubectl apply -f k8s/namespace.yaml
+
+      - name: Apply configmap
         run: |
-          kubectl apply -f k8s/ -n genai-prompt-enhancer
-      
-      - name: Wait for deployment
+          kubectl apply -f k8s/configmap.yaml -n ${{ env.NAMESPACE }}
+
+      - name: Create API secret
+        env:
+          GENAI_API_KEY: ${{ secrets.GENAI_API_KEY }}
         run: |
-          kubectl rollout status deployment/rewrite-deploy -n genai-prompt-enhancer --timeout=5m
-          kubectl rollout status deployment/summarize-deploy -n genai-prompt-enhancer --timeout=5m
-          kubectl rollout status deployment/email-deploy -n genai-prompt-enhancer --timeout=5m
-          kubectl rollout status deployment/frontend-deploy -n genai-prompt-enhancer --timeout=5m
-          kubectl rollout status deployment/gateway-deploy -n genai-prompt-enhancer --timeout=5m
-      
-      - name: Verify deployment
+          kubectl create secret generic genai-api-credentials \
+            --from-literal=GENAI_API_KEY="${GENAI_API_KEY}" \
+            --namespace=${{ env.NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply manifests
         run: |
-          kubectl get pods -n genai-prompt-enhancer
-          kubectl get svc -n genai-prompt-enhancer
-          kubectl get hpa -n genai-prompt-enhancer
-      
-      - name: Run health checks
+          find k8s -maxdepth 1 -name '*.yaml' ! -name 'namespace.yaml' -print0 | \
+            xargs -0 -I{} kubectl apply -f {} -n ${{ env.NAMESPACE }}
+
+      - name: Set deployment images to current commit
+        env:
+          REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          TAG: ${{ env.IMAGE_TAG }}
         run: |
-          # Wait for pods to be ready
-          kubectl wait --for=condition=ready pod -l app=rewrite-service -n genai-prompt-enhancer --timeout=2m
-          kubectl wait --for=condition=ready pod -l app=summarize-service -n genai-prompt-enhancer --timeout=2m
-          kubectl wait --for=condition=ready pod -l app=email-service -n genai-prompt-enhancer --timeout=2m
-          kubectl wait --for=condition=ready pod -l app=frontend -n genai-prompt-enhancer --timeout=2m
-          kubectl wait --for=condition=ready pod -l app=nginx-gateway -n genai-prompt-enhancer --timeout=2m
-      
+          kubectl set image deployment/rewrite-service rewrite=${REGISTRY}/rewrite-service:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/summarize-service summarize=${REGISTRY}/summarize-service:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/email-service email=${REGISTRY}/email-service:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/nginx-gateway nginx=${REGISTRY}/nginx-gateway:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/frontend frontend=${REGISTRY}/frontend:${TAG} -n ${{ env.NAMESPACE }} --record
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/rewrite-service -n ${{ env.NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/summarize-service -n ${{ env.NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/email-service -n ${{ env.NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/nginx-gateway -n ${{ env.NAMESPACE }} --timeout=5m
+          kubectl rollout status deployment/frontend -n ${{ env.NAMESPACE }} --timeout=5m
+
+      - name: Quick smoke test
+        run: |
+          kubectl wait --for=condition=available deployment --all -n ${{ env.NAMESPACE }} --timeout=2m
+          kubectl port-forward svc/nginx-gateway 8080:8080 -n ${{ env.NAMESPACE }} >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          sleep 5
+          curl -f http://localhost:8080/health
+          kill ${PF_PID}
+
       - name: Deployment summary
         if: always()
         run: |
           echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "### Pods" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          kubectl get pods -n genai-prompt-enhancer >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n ${{ env.NAMESPACE }} >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "### Services" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          kubectl get svc -n genai-prompt-enhancer >> $GITHUB_STEP_SUMMARY
+          kubectl get svc -n ${{ env.NAMESPACE }} >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-      
-      - name: Rollback on failure
-        if: failure()
-        run: |
-          echo "Deployment failed, rolling back..."
-          kubectl rollout undo deployment/rewrite-deploy -n genai-prompt-enhancer
-          kubectl rollout undo deployment/summarize-deploy -n genai-prompt-enhancer
-          kubectl rollout undo deployment/email-deploy -n genai-prompt-enhancer
-          kubectl rollout undo deployment/frontend-deploy -n genai-prompt-enhancer
-          kubectl rollout undo deployment/gateway-deploy -n genai-prompt-enhancer
 
   smoke-test:
     runs-on: ubuntu-latest
     needs: deploy
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ env.KUBECTL_VERSION }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+          wait: 120s
+
+      - name: Build and load images into kind
+        env:
+          REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          TAG: ${{ env.IMAGE_TAG }}
+          KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}
+        run: |
+          set -euo pipefail
+          services=(rewrite-service summarize-service email-service nginx-gateway frontend)
+          for svc in "${services[@]}"; do
+            build_args=""
+            if [ "$svc" = "frontend" ]; then
+              build_args="--build-arg VITE_GATEWAY_URL=http://nginx-gateway:8080"
+            fi
+            docker build $build_args -t ${REGISTRY}/${svc}:${TAG} ${svc}
+            kind load docker-image ${REGISTRY}/${svc}:${TAG} --name ${KIND_CLUSTER_NAME}
+          done
+
+      - name: Deploy manifests for smoke test
+        env:
+          REGISTRY: ${{ env.IMAGE_REGISTRY }}
+          TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml -n ${{ env.NAMESPACE }}
+          kubectl create secret generic genai-api-credentials \
+            --from-literal=GENAI_API_KEY="${{ secrets.GENAI_API_KEY }}" \
+            --namespace=${{ env.NAMESPACE }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+          find k8s -maxdepth 1 -name '*.yaml' ! -name 'namespace.yaml' -print0 | \
+            xargs -0 -I{} kubectl apply -f {} -n ${{ env.NAMESPACE }}
+          kubectl set image deployment/rewrite-service rewrite=${REGISTRY}/rewrite-service:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/summarize-service summarize=${REGISTRY}/summarize-service:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/email-service email=${REGISTRY}/email-service:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/nginx-gateway nginx=${REGISTRY}/nginx-gateway:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl set image deployment/frontend frontend=${REGISTRY}/frontend:${TAG} -n ${{ env.NAMESPACE }} --record
+          kubectl rollout status deployment --all -n ${{ env.NAMESPACE }} --timeout=5m
+
       - name: Run smoke tests
         run: |
-          echo "Running smoke tests..."
-          # Add your smoke test commands here
-          # curl -f http://your-service-url/health || exit 1
-      
-      - name: Notify on success
-        if: success()
-        run: |
-          echo "Deployment successful! 🎉"
-      
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "Deployment failed! ❌"
+          kubectl wait --for=condition=available deployment --all -n ${{ env.NAMESPACE }} --timeout=2m
+          kubectl port-forward svc/nginx-gateway 8080:8080 -n ${{ env.NAMESPACE }} >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          sleep 5
+          curl -f http://localhost:8080/health
+          kill ${PF_PID}

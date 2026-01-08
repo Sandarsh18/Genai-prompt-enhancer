@@ -2,6 +2,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: email-hpa
+  namespace: genai-prompt-enhancer
   labels:
     app: email
 spec:

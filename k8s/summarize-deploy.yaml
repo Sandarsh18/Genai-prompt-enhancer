@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: summarize-service
+  namespace: genai-prompt-enhancer
   labels:
     app: summarize
     tier: backend
@@ -18,8 +19,8 @@ spec:
     spec:
       containers:
         - name: summarize
-          image: summarize-service:latest
-          imagePullPolicy: Never
+          image: ghcr.io/devops-el/genai-prompt-enhancer/summarize-service:latest
+          imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
                 name: genai-shared-config

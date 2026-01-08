@@ -1,0 +1,159 @@
+# GenAI Prompt Enhancer - Docker Compose Configuration
+# DEVOPS BEST PRACTICE: This file enables:
+# 1. Portable deployment across any Linux machine with Docker
+# 2. Automatic service discovery via Docker networking
+# 3. Proper dependency management and startup order
+# 4. Health checks and restart policies
+# 5. No dependency on host-installed tools (Python, Node, uvicorn)
+
+version: '3.8'
+
+# DEVOPS: Custom network for service isolation and DNS
+# All services can communicate using container names
+# This mirrors Kubernetes service networking
+networks:
+  genai-network:
+    driver: bridge
+    name: genai-network
+
+services:
+  # Backend Microservice: Rewrite Service
+  rewrite-service:
+    build:
+      context: ./rewrite-service
+      dockerfile: Dockerfile
+    image: genai-rewrite-service:latest
+    container_name: rewrite-service
+    networks:
+      - genai-network
+    environment:
+      - GENAI_API_KEY=${GENAI_API_KEY:-}
+      - GENAI_PROVIDER=${GENAI_PROVIDER:-gemini}
+      - GENAI_MODEL=${GENAI_MODEL:-gemini-1.5-flash}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Backend Microservice: Summarize Service
+  summarize-service:
+    build:
+      context: ./summarize-service
+      dockerfile: Dockerfile
+    image: genai-summarize-service:latest
+    container_name: summarize-service
+    networks:
+      - genai-network
+    environment:
+      - GENAI_API_KEY=${GENAI_API_KEY:-}
+      - GENAI_PROVIDER=${GENAI_PROVIDER:-gemini}
+      - GENAI_MODEL=${GENAI_MODEL:-gemini-1.5-flash}
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # Backend Microservice: Email Service
+  email-service:
+    build:
+      context: ./email-service
+      dockerfile: Dockerfile
+    image: genai-email-service:latest
+    container_name: email-service
+    networks:
+      - genai-network
+    environment:
+      - GENAI_API_KEY=${GENAI_API_KEY:-}
+      - GENAI_PROVIDER=${GENAI_PROVIDER:-gemini}
+      - GENAI_MODEL=${GENAI_MODEL:-gemini-1.5-flash}
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+  # API Gateway: NGINX Reverse Proxy
+  nginx-gateway:
+    build:
+      context: ./nginx-gateway
+      dockerfile: Dockerfile
+    image: genai-nginx-gateway:latest
+    container_name: nginx-gateway
+    networks:
+      - genai-network
+    ports:
+      - "8088:8088"
+    depends_on:
+      rewrite-service:
+        condition: service_healthy
+      summarize-service:
+        condition: service_healthy
+      email-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # Frontend: React + Vite (Production Build)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: genai-frontend:latest
+    container_name: frontend
+    networks:
+      - genai-network
+    ports:
+      - "5173:80"
+    depends_on:
+      - nginx-gateway
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M

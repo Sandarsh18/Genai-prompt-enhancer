@@ -1,14 +1,15 @@
 #!/bin/bash
 
-# GenAI Prompt Enhancer - Development Startup Script
-# This script starts all microservices, the gateway, and the frontend
-#
+# GenAI Prompt Enhancer - Production-Grade Portable Startup Script
+# 
 # DEVOPS PRINCIPLES IMPLEMENTED:
-# 1. Idempotency: Safe to run multiple times without side effects
-# 2. Offline-first: Works without internet after initial setup
-# 3. Image caching: Reuses Docker images instead of re-pulling
-# 4. Resource cleanup: Properly handles existing processes/containers
-# 5. Fail-fast: Exits early on critical errors
+# 1. Docker-only: No dependency on host Python, Node, npm, uvicorn
+# 2. Portable: Works on ANY Linux machine with Docker installed
+# 3. Offline-first: Reuses cached images after first build
+# 4. Fail-fast: Comprehensive preflight checks with clear error messages
+# 5. Health validation: Ensures all services are truly ready before declaring success
+# 6. Idempotent: Safe to run multiple times
+# 7. Production-ready: Mirrors Kubernetes networking and service discovery
 
 set -e
 
@@ -20,320 +21,394 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}=====================================${NC}"
-echo -e "${BLUE}GenAI Prompt Enhancer - Starting...${NC}"
-echo -e "${BLUE}=====================================${NC}"
+echo -e "${BLUE}=========================================${NC}"
+echo -e "${BLUE}GenAI Prompt Enhancer - Docker Startup${NC}"
+echo -e "${BLUE}=========================================${NC}"
 echo ""
+
+# ============================================
+# PHASE 1: ENVIRONMENT PREFLIGHT CHECKS
+# ============================================
+
+echo -e "${CYAN}Phase 1: Environment Preflight Checks${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
+
+# Check if Docker is installed
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}✗ CRITICAL: Docker is not installed${NC}"
+    echo ""
+    echo -e "${YELLOW}This project requires Docker to run.${NC}"
+    echo -e "${YELLOW}Install Docker:${NC}"
+    echo -e "  Ubuntu/Debian: ${CYAN}sudo apt-get install docker.io${NC}"
+    echo -e "  RHEL/CentOS:   ${CYAN}sudo yum install docker${NC}"
+    echo -e "  Other:         ${CYAN}https://docs.docker.com/engine/install/${NC}"
+    echo ""
+    exit 1
+fi
+echo -e "${GREEN}✓ Docker is installed${NC}"
+
+# Check if Docker daemon is running
+if ! docker info &> /dev/null; then
+    echo -e "${RED}✗ CRITICAL: Docker daemon is not running${NC}"
+    echo ""
+    echo -e "${YELLOW}Start Docker daemon:${NC}"
+    echo -e "  ${CYAN}sudo systemctl start docker${NC}"
+    echo -e "  ${CYAN}sudo service docker start${NC}"
+    echo ""
+    exit 1
+fi
+echo -e "${GREEN}✓ Docker daemon is running${NC}"
+
+# Check if user has Docker permissions
+if ! docker ps &> /dev/null; then
+    echo -e "${RED}✗ CRITICAL: No permission to access Docker${NC}"
+    echo ""
+    echo -e "${YELLOW}Add your user to the docker group:${NC}"
+    echo -e "  ${CYAN}sudo usermod -aG docker \$USER${NC}"
+    echo -e "  ${CYAN}newgrp docker${NC}"
+    echo ""
+    exit 1
+fi
+echo -e "${GREEN}✓ Docker permissions verified${NC}"
 
 # Load environment variables
 if [ -f .env ]; then
     echo -e "${GREEN}✓ Loading environment variables from .env${NC}"
     export $(grep -v '^#' .env | xargs)
 else
-    echo -e "${YELLOW}⚠ No .env file found. Creating from .env.example${NC}"
-    cp .env.example .env
-    echo -e "${RED}✗ Please edit .env and add your GENAI_API_KEY${NC}"
-    echo -e "${YELLOW}  Get your API key from: https://aistudio.google.com/apikey${NC}"
-    exit 1
+    echo -e "${YELLOW}⚠ No .env file found${NC}"
+    if [ -f .env.example ]; then
+        echo -e "${YELLOW}  Creating .env from .env.example${NC}"
+        cp .env.example .env
+        export $(grep -v '^#' .env | xargs)
+    fi
 fi
 
-# Check if API key is set
+# Check API key configuration
 if [ "$GENAI_API_KEY" = "your_api_key_here" ] || [ -z "$GENAI_API_KEY" ]; then
     echo -e "${YELLOW}⚠ GENAI_API_KEY is not configured${NC}"
-    echo -e "${YELLOW}  The services will run with fallback mode (no actual AI)${NC}"
-    echo -e "${YELLOW}  To enable AI features, edit .env and add your API key${NC}"
-    echo ""
+    echo -e "${YELLOW}  Services will run in MOCK MODE (no actual AI)${NC}"
 fi
 
-# DEVOPS: Function to check if port is in use
-# Ensures idempotency by gracefully handling existing services
-check_port() {
-    if lsof -Pi :$1 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
-        echo -e "${YELLOW}⚠ Port $1 is already in use${NC}"
-        echo -e "  Attempting to free port..."
-        lsof -ti:$1 | xargs kill -9 2>/dev/null || true
-        sleep 1
-        
-        # Double-check port is freed
-        if lsof -Pi :$1 -sTCP:LISTEN -t >/dev/null 2>&1 ; then
-            echo -e "${RED}✗ Failed to free port $1${NC}"
-            return 1
-        fi
-    fi
-    return 0
-}
+echo ""
 
-# DEVOPS: Function to check if Docker image exists locally
-# This enables offline-first operation and avoids unnecessary builds
-check_docker_image() {
-    local image_name=$1
-    if docker image inspect "$image_name" >/dev/null 2>&1; then
-        return 0  # Image exists
-    else
-        return 1  # Image does not exist
-    fi
-}
+# ============================================
+# PHASE 2: CLEANUP EXISTING CONTAINERS & HOST PROCESSES
+# ============================================
 
-# DEVOPS: Function to wait for service readiness
-# Production-grade wait loop with timeout
-wait_for_service_ready() {
-    local service_name=$1
-    local port=$2
-    local max_wait=30
-    local elapsed=0
-    
-    echo -e "  ${YELLOW}⏳${NC} Waiting for $service_name to be ready..."
-    
-    while [ $elapsed -lt $max_wait ]; do
-        if curl -s http://localhost:$port/ready > /dev/null 2>&1; then
-            echo -e "  ${GREEN}✓${NC} $service_name is ready (${elapsed}s)"
-            return 0
-        fi
-        sleep 1
-        elapsed=$((elapsed + 1))
-    done
-    
-    echo -e "  ${RED}✗${NC} $service_name failed to become ready after ${max_wait}s"
-    return 1
-}
+echo -e "${CYAN}Phase 2: Cleanup Existing Resources${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
 
-# DEVOPS: Function to validate gateway can reach backends
-# Critical for preventing 502 errors
-validate_gateway_routing() {
-    local endpoint=$1
-    local max_attempts=5
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        local response=$(curl -s -X POST \
-            -H "Content-Type: application/json" \
-            -d '{"text":"health check"}' \
-            -w "%{http_code}" \
-            -o /dev/null \
-            http://localhost:8088/$endpoint 2>&1)
-        
-        if [ "$response" = "200" ]; then
-            return 0
-        fi
-        
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-    
-    return 1
-}
+# Stop Docker containers (including old names for backward compatibility)
+echo -e "${YELLOW}Stopping existing containers...${NC}"
+docker stop rewrite-service summarize-service email-service nginx-gateway genai-gateway frontend 2>/dev/null || true
+docker rm rewrite-service summarize-service email-service nginx-gateway genai-gateway frontend 2>/dev/null || true
+echo -e "${GREEN}✓ Containers stopped${NC}"
 
-# Clean up function
-cleanup() {
-    echo ""
-    echo -e "${YELLOW}Shutting down services...${NC}"
-    jobs -p | xargs kill 2>/dev/null || true
-    # DEVOPS: Clean up docker container but preserve the image for offline use
-    docker stop genai-gateway 2>/dev/null || true
-    docker rm genai-gateway 2>/dev/null || true
-    exit 0
-}
+# Kill old host-based processes (from previous non-Docker setup)
+echo -e "${YELLOW}Cleaning up any old host processes...${NC}"
+pkill -f "uvicorn app:app" 2>/dev/null || true
+pkill -f "vite" 2>/dev/null || true
+sleep 1
+echo -e "${GREEN}✓ Host processes cleaned${NC}"
 
-trap cleanup SIGINT SIGTERM
-
-# DEVOPS: Check and free ports - ensures idempotent operation
-echo -e "${BLUE}Checking ports...${NC}"
+# Verify ports are free
+echo -e "${YELLOW}Verifying ports are available...${NC}"
+ports_in_use=()
 for port in 8000 8001 8002 8088 5173; do
-    if ! check_port $port; then
-        echo -e "${RED}✗ Cannot free port $port. Please check manually.${NC}"
-        exit 1
+    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        ports_in_use+=($port)
     fi
 done
-echo -e "${GREEN}✓ All required ports are available${NC}"
 
-# Create logs directory
-mkdir -p logs
-
-# Start microservices
-echo ""
-echo -e "${BLUE}Starting microservices...${NC}"
-
-echo -e "${BLUE}Starting Rewrite Service on port 8000${NC}"
-cd "$PROJECT_ROOT/rewrite-service"
-uvicorn app:app --host 0.0.0.0 --port 8000 > "$PROJECT_ROOT/logs/rewrite.log" 2>&1 &
-REWRITE_PID=$!
-
-echo -e "${BLUE}Starting Summarize Service on port 8001${NC}"
-cd "$PROJECT_ROOT/summarize-service"
-uvicorn app:app --host 0.0.0.0 --port 8001 > "$PROJECT_ROOT/logs/summarize.log" 2>&1 &
-SUMMARIZE_PID=$!
-
-echo -e "${BLUE}Starting Email Service on port 8002${NC}"
-cd "$PROJECT_ROOT/email-service"
-uvicorn app:app --host 0.0.0.0 --port 8002 > "$PROJECT_ROOT/logs/email.log" 2>&1 &
-EMAIL_PID=$!
-
-# DEVOPS: Wait for each service to become ready (not just started)
-echo ""
-echo -e "${BLUE}Waiting for services to become ready...${NC}"
-
-if ! wait_for_service_ready "Rewrite Service" 8000; then
-    echo -e "${RED}✗ Rewrite Service failed to start${NC}"
-    tail -20 "$PROJECT_ROOT/logs/rewrite.log"
-    cleanup
-    exit 1
-fi
-
-if ! wait_for_service_ready "Summarize Service" 8001; then
-    echo -e "${RED}✗ Summarize Service failed to start${NC}"
-    tail -20 "$PROJECT_ROOT/logs/summarize.log"
-    cleanup
-    exit 1
-fi
-
-if ! wait_for_service_ready "Email Service" 8002; then
-    echo -e "${RED}✗ Email Service failed to start${NC}"
-    tail -20 "$PROJECT_ROOT/logs/email.log"
-    cleanup
-    exit 1
-fi
-
-echo -e "${GREEN}✓ All microservices are ready${NC}"
-
-# Start NGINX Gateway
-echo ""
-echo -e "${BLUE}Starting NGINX Gateway...${NC}"
-
-# DEVOPS: Stop any existing container (idempotency)
-docker stop genai-gateway 2>/dev/null || true
-docker rm genai-gateway 2>/dev/null || true
-
-# DEVOPS BEST PRACTICE: Image Caching Strategy
-# Check if image exists locally before building
-# This enables:
-# 1. Offline operation after first build
-# 2. Faster startup times
-# 3. No dependency on network/internet
-# 4. Production-grade reliability
-cd "$PROJECT_ROOT/nginx-gateway"
-
-if check_docker_image "genai-gateway"; then
-    echo -e "${GREEN}✓ Using cached genai-gateway image (offline-friendly)${NC}"
-else
-    echo -e "${YELLOW}⚠ genai-gateway image not found. Building...${NC}"
+if [ ${#ports_in_use[@]} -gt 0 ]; then
+    echo -e "${RED}✗ Ports still in use: ${ports_in_use[*]}${NC}"
+    echo -e "${YELLOW}Attempting to force-free ports...${NC}"
+    for port in "${ports_in_use[@]}"; do
+        lsof -ti:$port | xargs kill -9 2>/dev/null || true
+    done
+    sleep 2
     
-    # DEVOPS: Use --pull=false to avoid re-pulling base images
-    # This prevents network timeouts and uses locally cached nginx:alpine
-    if docker build --pull=false -t genai-gateway . > "$PROJECT_ROOT/logs/docker-build.log" 2>&1; then
-        echo -e "${GREEN}✓ Successfully built genai-gateway image${NC}"
-    else
-        echo -e "${RED}✗ Failed to build NGINX gateway image${NC}"
-        echo -e "${YELLOW}Attempting build with base image pull (requires internet)...${NC}"
-        
-        # Fallback: try with --pull=true if --pull=false fails
-        if ! docker build --pull=true -t genai-gateway . > "$PROJECT_ROOT/logs/docker-build.log" 2>&1; then
-            echo -e "${RED}✗ Build failed even with image pull${NC}"
-            cat "$PROJECT_ROOT/logs/docker-build.log"
-            cleanup
-            exit 1
+    # Check again
+    still_in_use=()
+    for port in 8000 8001 8002 8088 5173; do
+        if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+            still_in_use+=($port)
         fi
-        echo -e "${GREEN}✓ Successfully built genai-gateway image (with pull)${NC}"
+    done
+    
+    if [ ${#still_in_use[@]} -gt 0 ]; then
+        echo -e "${RED}✗ Cannot free ports: ${still_in_use[*]}${NC}"
+        echo -e "${YELLOW}Please manually stop processes using these ports:${NC}"
+        for port in "${still_in_use[@]}"; do
+            echo -e "  ${CYAN}sudo lsof -ti:$port | xargs sudo kill -9${NC}"
+        done
+        exit 1
     fi
 fi
+echo -e "${GREEN}✓ All ports available${NC}"
 
-# DEVOPS: Start gateway container with configuration baked in
-# Using host network mode on Linux for direct localhost access
-# Container is ephemeral, but image is preserved for reuse
-docker run -d --name genai-gateway \
-    --network=host \
-    -e GENAI_PROVIDER \
-    -e GENAI_MODEL \
-    -e GENAI_GEMINI_BASE_URL \
-    -e GENAI_API_BASE_URL \
-    -e GENAI_API_KEY \
-    genai-gateway > /dev/null
+echo ""
 
-sleep 2
+# ============================================
+# PHASE 3: DOCKER NETWORK SETUP
+# ============================================
 
-if docker ps | grep genai-gateway > /dev/null; then
-    echo -e "${GREEN}✓ NGINX Gateway container running${NC}"
+echo -e "${CYAN}Phase 3: Docker Network Setup${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
+
+if docker network inspect genai-network &>/dev/null; then
+    echo -e "${GREEN}✓ Docker network 'genai-network' already exists${NC}"
 else
-    echo -e "${RED}✗ NGINX Gateway failed to start${NC}"
-    docker logs genai-gateway
-    cleanup
-    exit 1
+    echo -e "${YELLOW}Creating Docker network 'genai-network'...${NC}"
+    docker network create genai-network
+    echo -e "${GREEN}✓ Docker network created${NC}"
 fi
 
-# DEVOPS: Critical validation - ensure gateway can reach backends
-# This prevents 502 errors and ensures system is truly ready
 echo ""
-echo -e "${BLUE}Validating gateway routing...${NC}"
 
-if ! validate_gateway_routing "rewrite"; then
-    echo -e "${RED}✗ Gateway cannot reach rewrite service${NC}"
-    docker logs genai-gateway | tail -20
-    cleanup
-    exit 1
-fi
-echo -e "${GREEN}✓ Gateway → Rewrite Service: OK${NC}"
+# ============================================
+# PHASE 4: BUILD DOCKER IMAGES
+# ============================================
 
-if ! validate_gateway_routing "summarize"; then
-    echo -e "${RED}✗ Gateway cannot reach summarize service${NC}"
-    docker logs genai-gateway | tail -20
-    cleanup
-    exit 1
-fi
-echo -e "${GREEN}✓ Gateway → Summarize Service: OK${NC}"
+echo -e "${CYAN}Phase 4: Build Docker Images${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
 
-if ! validate_gateway_routing "email"; then
-    echo -e "${RED}✗ Gateway cannot reach email service${NC}"
-    docker logs genai-gateway | tail -20
-    cleanup
-    exit 1
-fi
-echo -e "${GREEN}✓ Gateway → Email Service: OK${NC}"
+mkdir -p logs
 
-echo -e "${GREEN}✓ All gateway routes validated${NC}"
+build_image() {
+    local service_name=$1
+    local image_name=$2
+    local context_dir=$3
+    
+    if docker image inspect "$image_name" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Using cached image: $image_name${NC}"
+    else
+        echo -e "${YELLOW}Building $service_name...${NC}"
+        if docker build -t "$image_name" "$context_dir" > "$PROJECT_ROOT/logs/$service_name-build.log" 2>&1; then
+            echo -e "${GREEN}✓ Built: $image_name${NC}"
+        else
+            echo -e "${RED}✗ Failed to build $service_name${NC}"
+            tail -20 "$PROJECT_ROOT/logs/$service_name-build.log"
+            exit 1
+        fi
+    fi
+}
 
-# Start Frontend
+build_image "rewrite-service" "genai-rewrite-service:latest" "./rewrite-service"
+build_image "summarize-service" "genai-summarize-service:latest" "./summarize-service"
+build_image "email-service" "genai-email-service:latest" "./email-service"
+build_image "nginx-gateway" "genai-nginx-gateway:latest" "./nginx-gateway"
+build_image "frontend" "genai-frontend:latest" "./frontend"
+
 echo ""
-echo -e "${BLUE}Starting Frontend...${NC}"
-cd "$PROJECT_ROOT/frontend"
-export VITE_GATEWAY_URL=http://localhost:8088
-nohup npm run dev > "$PROJECT_ROOT/logs/frontend.log" 2>&1 &
-FRONTEND_PID=$!
 
+# ============================================
+# PHASE 5: START BACKEND SERVICES
+# ============================================
+
+echo -e "${CYAN}Phase 5: Start Backend Services${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
+
+echo -e "${YELLOW}Starting rewrite-service...${NC}"
+docker run -d \
+  --name rewrite-service \
+  --network genai-network \
+  -p 8000:8000 \
+  -e GENAI_API_KEY="${GENAI_API_KEY:-}" \
+  -e GENAI_PROVIDER="${GENAI_PROVIDER:-gemini}" \
+  -e GENAI_MODEL="${GENAI_MODEL:-gemini-1.5-flash}" \
+  --restart unless-stopped \
+  genai-rewrite-service:latest
+echo -e "${GREEN}✓ rewrite-service started${NC}"
+
+echo -e "${YELLOW}Starting summarize-service...${NC}"
+docker run -d \
+  --name summarize-service \
+  --network genai-network \
+  -p 8001:8001 \
+  -e GENAI_API_KEY="${GENAI_API_KEY:-}" \
+  -e GENAI_PROVIDER="${GENAI_PROVIDER:-gemini}" \
+  -e GENAI_MODEL="${GENAI_MODEL:-gemini-1.5-flash}" \
+  --restart unless-stopped \
+  genai-summarize-service:latest
+echo -e "${GREEN}✓ summarize-service started${NC}"
+
+echo -e "${YELLOW}Starting email-service...${NC}"
+docker run -d \
+  --name email-service \
+  --network genai-network \
+  -p 8002:8002 \
+  -e GENAI_API_KEY="${GENAI_API_KEY:-}" \
+  -e GENAI_PROVIDER="${GENAI_PROVIDER:-gemini}" \
+  -e GENAI_MODEL="${GENAI_MODEL:-gemini-1.5-flash}" \
+  --restart unless-stopped \
+  genai-email-service:latest
+echo -e "${GREEN}✓ email-service started${NC}"
+
+echo ""
+
+# ============================================
+# PHASE 6: WAIT FOR BACKEND HEALTH
+# ============================================
+
+echo -e "${CYAN}Phase 6: Backend Health Validation${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
+
+wait_for_health() {
+    local service_name=$1
+    local port=$2
+    local max_wait=60
+    local elapsed=0
+    
+    echo -e "${YELLOW}⏳ Waiting for $service_name to become healthy...${NC}"
+    
+    while [ $elapsed -lt $max_wait ]; do
+        if curl -sf http://localhost:$port/ready > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ $service_name is healthy (${elapsed}s)${NC}"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+        
+        if [ $((elapsed % 10)) -eq 0 ]; then
+            echo -e "  ${YELLOW}Still waiting... (${elapsed}s/${max_wait}s)${NC}"
+        fi
+    done
+    
+    echo -e "${RED}✗ $service_name failed to become healthy after ${max_wait}s${NC}"
+    docker logs "$service_name" --tail 30
+    return 1
+}
+
+if ! wait_for_health "rewrite-service" 8000; then exit 1; fi
+if ! wait_for_health "summarize-service" 8001; then exit 1; fi
+if ! wait_for_health "email-service" 8002; then exit 1; fi
+
+echo ""
+
+# ============================================
+# PHASE 7: START NGINX GATEWAY
+# ============================================
+
+echo -e "${CYAN}Phase 7: Start NGINX Gateway${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
+
+echo -e "${YELLOW}Starting nginx-gateway...${NC}"
+docker run -d \
+  --name nginx-gateway \
+  --network genai-network \
+  -p 8088:8088 \
+  --restart unless-stopped \
+  genai-nginx-gateway:latest
+echo -e "${GREEN}✓ nginx-gateway started${NC}"
+
+echo -e "${YELLOW}⏳ Waiting for nginx-gateway to become healthy...${NC}"
 sleep 3
 
-# Save PIDs to file for stop script
-echo "$REWRITE_PID" > "$PROJECT_ROOT/logs/rewrite.pid"
-echo "$SUMMARIZE_PID" > "$PROJECT_ROOT/logs/summarize.pid"
-echo "$EMAIL_PID" > "$PROJECT_ROOT/logs/email.pid"
-echo "$FRONTEND_PID" > "$PROJECT_ROOT/logs/frontend.pid"
+max_wait=30
+elapsed=0
+while [ $elapsed -lt $max_wait ]; do
+    if curl -sf http://localhost:8088/health > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ nginx-gateway is healthy (${elapsed}s)${NC}"
+        break
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+done
 
-# Display status
+if [ $elapsed -ge $max_wait ]; then
+    echo -e "${RED}✗ nginx-gateway failed to become healthy${NC}"
+    docker logs nginx-gateway --tail 30
+    exit 1
+fi
+
 echo ""
-echo -e "${GREEN}=====================================${NC}"
-echo -e "${GREEN}✓ System Ready - All Validations Passed${NC}"
-echo -e "${GREEN}=====================================${NC}"
+
+# ============================================
+# PHASE 8: VALIDATE GATEWAY ROUTING
+# ============================================
+
+echo -e "${CYAN}Phase 8: Gateway Routing Validation${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
+
+test_route() {
+    local endpoint=$1
+    local service_name=$2
+    
+    echo -e "${YELLOW}Testing /$endpoint route...${NC}"
+    
+    local response=$(curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -d '{"text":"test"}' \
+        -w "%{http_code}" \
+        -o /dev/null \
+        http://localhost:8088/$endpoint 2>&1)
+    
+    if [ "$response" = "200" ]; then
+        echo -e "${GREEN}✓ Gateway → $service_name: WORKING${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ Gateway → $service_name: FAILED (HTTP $response)${NC}"
+        docker logs nginx-gateway --tail 10
+        return 1
+    fi
+}
+
+if ! test_route "rewrite" "rewrite-service"; then exit 1; fi
+if ! test_route "summarize" "summarize-service"; then exit 1; fi
+if ! test_route "email" "email-service"; then exit 1; fi
+
 echo ""
-echo -e "${BLUE}Service URLs:${NC}"
-echo -e "  Frontend:        ${GREEN}http://localhost:5173${NC}"
-echo -e "  NGINX Gateway:   ${GREEN}http://localhost:8088${NC}"
-echo -e "  Rewrite API:     http://localhost:8000/docs"
-echo -e "  Summarize API:   http://localhost:8001/docs"
-echo -e "  Email API:       http://localhost:8002/docs"
+
+# ============================================
+# PHASE 9: START FRONTEND
+# ============================================
+
+echo -e "${CYAN}Phase 9: Start Frontend${NC}"
+echo -e "${BLUE}-------------------------------------${NC}"
+
+echo -e "${YELLOW}Starting frontend...${NC}"
+docker run -d \
+  --name frontend \
+  --network genai-network \
+  -p 5173:80 \
+  --restart unless-stopped \
+  genai-frontend:latest
+echo -e "${GREEN}✓ frontend started${NC}"
+
+sleep 3
+if curl -sf http://localhost:5173 > /dev/null 2>&1; then
+    echo -e "${GREEN}✓ frontend is serving content${NC}"
+else
+    echo -e "${YELLOW}⚠ frontend may still be starting up${NC}"
+fi
+
 echo ""
-echo -e "${BLUE}Readiness Endpoints:${NC}"
-echo -e "  Rewrite:    http://localhost:8000/ready"
-echo -e "  Summarize:  http://localhost:8001/ready"
-echo -e "  Email:      http://localhost:8002/ready"
+
+# ============================================
+# SUCCESS SUMMARY
+# ============================================
+
+echo -e "${GREEN}=========================================${NC}"
+echo -e "${GREEN}✓ ALL SYSTEMS OPERATIONAL${NC}"
+echo -e "${GREEN}=========================================${NC}"
 echo ""
-echo -e "${BLUE}Logs:${NC}"
-echo -e "  Check logs/ directory for service logs"
+echo -e "${CYAN}Service Status:${NC}"
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "frontend|nginx-gateway|rewrite-service|summarize-service|email-service"
 echo ""
-echo -e "${BLUE}Process Management:${NC}"
-echo -e "  Stop all services: ${GREEN}./stop-dev.sh${NC}"
-echo -e "  Check status:      ${GREEN}./status.sh${NC}"
-echo -e "  Run tests:         ${GREEN}./test-all.sh${NC}"
-echo -e "  View logs:         ${GREEN}tail -f logs/*.log${NC}"
+echo -e "${CYAN}Access Points:${NC}"
+echo -e "  Frontend:       ${GREEN}http://localhost:5173${NC}"
+echo -e "  API Gateway:    ${GREEN}http://localhost:8088${NC}"
+echo -e "  Gateway Health: ${GREEN}http://localhost:8088/health${NC}"
 echo ""
-echo -e "${GREEN}🚀 Production-grade DevOps: Idempotent, validated, ready!${NC}"
+echo -e "${CYAN}Management Commands:${NC}"
+echo -e "  Stop all:       ${GREEN}./stop-dev.sh${NC}"
+echo -e "  Check status:   ${GREEN}./status.sh${NC}"
+echo -e "  Run tests:      ${GREEN}./test-all.sh${NC}"
+echo ""
+echo -e "${GREEN}🚀 Production-Ready: Portable, Scalable, Kubernetes-Like!${NC}"
 echo ""

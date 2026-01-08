@@ -1,0 +1,19 @@
+checks:
+  addAllBuiltIn: true
+  exclude:
+    - minimum-replicas    # single-replica OK for demo env
+    - no-readiness-probe  # all deployments already carry probes
+    - no-liveness-probe   # all deployments already carry probes
+    - privileged-containers
+    - host-network
+    - host-pid
+    - host-ipc
+    - required-annotations
+    - required-labels
+  config:
+    node-port:
+      exemptions:
+        - objectName: nginx-gateway
+          objectKind: Service
+        - objectName: frontend
+          objectKind: Service

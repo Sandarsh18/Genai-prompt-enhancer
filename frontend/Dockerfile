@@ -4,6 +4,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev=false
 COPY . ./
+# Set the gateway URL for the browser to connect to
+ARG VITE_GATEWAY_URL=http://localhost:8088
+ENV VITE_GATEWAY_URL=${VITE_GATEWAY_URL}
 RUN npm run build
 
 # Stage 2 - serve static assets via nginx

@@ -29,7 +29,7 @@ for port in 8000 8001 8002; do
     fi
 done
 
-if docker ps | grep genai-gateway > /dev/null 2>&1; then
+if docker ps | grep -E "nginx-gateway|genai-gateway" > /dev/null 2>&1; then
     echo -e "  ${GREEN}✓${NC} Gateway container running"
 else
     echo -e "  ${RED}✗${NC} Gateway container not running"
